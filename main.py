@@ -14,6 +14,11 @@ def main(page: ft.Page):
 
     data_manager = DataManager()
 
+    # 文件选择器（用于导入导出）- 必须在页面 overlay 中注册
+    # 注意：Flet 0.80+ 不要在构造函数中传 on_result，创建后再设置
+    file_picker = ft.FilePicker()
+    page.overlay.append(file_picker)
+
     # 内容区域
     content_area = ft.Container(expand=True, padding=20)
 
@@ -21,7 +26,7 @@ def main(page: ft.Page):
         """切换页面"""
         rail.selected_index = index
         if index == 0:
-            content_area.content = AccountPage(data_manager, page)
+            content_area.content = AccountPage(data_manager, page, file_picker)
         else:
             content_area.content = StatsPage()
         page.update()

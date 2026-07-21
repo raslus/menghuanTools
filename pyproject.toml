@@ -1,0 +1,28 @@
+[project]
+name = "menghuan_tools"
+version = "1.0.0"
+description = "账号管理系统"
+requires-python = ">=3.9"
+dependencies = [
+    "flet>=0.86.3",
+    "cryptography>=3.4.8",
+]
+
+[tool.flet.android]
+# Android 权限配置
+permissions = [
+    "android.permission.READ_EXTERNAL_STORAGE",
+    "android.permission.WRITE_EXTERNAL_STORAGE",
+    "android.permission.READ_MEDIA_IMAGES",
+    "android.permission.READ_MEDIA_VIDEO",
+    "android.permission.READ_MEDIA_AUDIO",
+]
+
+# 存储访问框架 (SAF) 支持
+# Android 11+ 使用 SAF 替代直接文件访问
+[tool.flet.android.meta_data]
+android.support.FILE_PROVIDER_PATHS = "@xml/file_paths"
+
+[tool.flet.build]
+# 构建配置
+development = false

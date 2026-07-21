@@ -3,10 +3,12 @@ import flet as ft
 
 
 class AccountPage(ft.Column):
-    def __init__(self, data_manager, flet_page):
+    def __init__(self, data_manager, flet_page, file_picker):
         super().__init__()
         self.data_manager = data_manager
         self.flet_page = flet_page
+        self.file_picker = file_picker
+        self.selected_file_path = None
         self.expand = True
         self.spacing = 10
 
@@ -23,6 +25,18 @@ class AccountPage(ft.Column):
             "添加账号",
             icon=ft.Icons.ADD,
             on_click=self.show_add_dialog,
+        )
+
+        # 导入导出按钮
+        self.import_button = ft.IconButton(
+            icon=ft.Icons.UPLOAD,
+            tooltip="导入账号",
+            on_click=self.show_import_dialog,
+        )
+        self.export_button = ft.IconButton(
+            icon=ft.Icons.DOWNLOAD,
+            tooltip="导出账号",
+            on_click=self.show_export_dialog,
         )
 
         # 账号列表 - 使用 ListView 代替 Column 以获得更好的滚动性能
@@ -45,7 +59,13 @@ class AccountPage(ft.Column):
 
         self.controls = [
             ft.Row(
-                [self.search_field, self.add_button],
+                [
+                    self.search_field,
+                    ft.Row(
+                        [self.import_button, self.export_button, self.add_button],
+                        spacing=10,
+                    ),
+                ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),
             ft.Divider(),
@@ -246,3 +266,141 @@ class AccountPage(ft.Column):
     def show_snackbar(self, message):
         """显示提示消息"""
         self.page.show_dialog(ft.SnackBar(content=ft.Text(message)))
+
+    def show_import_dialog(self, e):
+        """显示导入对话框 - 使用 FilePicker 选择文件"""
+        self.selected_file_path = None
+
+        password_field = ft.TextField(
+            label="导入密码（如有）",
+            password=True,
+            hint_text="如果导出时设置了密码，请输入",
+        )
+        merge_switch = ft.Switch(label="合并到现有数据", value=True)
+        selected_path_text = ft.Text("未选择文件", size=12, color=ft.Colors.OUTLINE)
+
+        def on_file_picked(e):
+            if e.files and len(e.files) > 0:
+                self.selected_file_path = e.files[0].path
+                selected_path_text.value = f"已选择: {e.files[0].name}"
+                selected_path_text.update()
+
+        def pick_file_click(e):
+            # 重置并设置新的回调
+            self.file_picker.on_result = on_file_picked
+            self.file_picker.pick_files(
+                allow_multiple=False,
+                allowed_extensions=["txt", "json", "bak", "enc"],
+                dialog_title="选择账号备份文件"
+            )
+
+        def do_import(e):
+            if not self.selected_file_path:
+                self.show_snackbar("请先选择文件")
+                return
+            success, count = self.data_manager.import_from_file(
+                self.selected_file_path, password_field.value, merge_switch.value
+            )
+            if success:
+                self.refresh_accounts()
+                self.show_snackbar(f"成功导入 {count} 个账号")
+                self.page.pop_dialog()
+            else:
+                self.show_snackbar("导入失败，请检查文件和密码")
+
+        def close_dialog(e):
+            self.page.pop_dialog()
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("导入账号"),
+            content=ft.Column(
+                [
+                    ft.Text("选择之前导出的账号备份文件"),
+                    ft.ElevatedButton(
+                        "选择文件",
+                        icon=ft.Icons.FOLDER_OPEN,
+                        on_click=pick_file_click,
+                    ),
+                    selected_path_text,
+                    password_field,
+                    merge_switch,
+                    ft.Text("提示：在 Android 上会自动请求存储权限", size=11, color=ft.Colors.OUTLINE),
+                ],
+                tight=True,
+                spacing=15,
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=close_dialog),
+                ft.ElevatedButton("导入", on_click=do_import),
+            ],
+        )
+
+        self.page.show_dialog(dialog)
+
+    def show_export_dialog(self, e):
+        """显示导出对话框 - 使用 FilePicker 选择保存路径"""
+        self.selected_file_path = None
+
+        password_field = ft.TextField(
+            label="导出密码（可选）",
+            password=True,
+            hint_text="设置密码以加密导出文件",
+        )
+        selected_path_text = ft.Text("未选择保存位置", size=12, color=ft.Colors.OUTLINE)
+
+        def on_save_picked(e):
+            if e.path:
+                self.selected_file_path = e.path
+                selected_path_text.value = f"保存到: {e.path}"
+                selected_path_text.update()
+
+        def pick_save_click(e):
+            # 重置并设置新的回调
+            self.file_picker.on_result = on_save_picked
+            self.file_picker.save_file(
+                dialog_title="导出账号备份",
+                file_name="accounts_backup.txt",
+                allowed_extensions=["txt"],
+            )
+
+        def do_export(e):
+            if not self.selected_file_path:
+                self.show_snackbar("请先选择保存位置")
+                return
+            success = self.data_manager.export_to_file(
+                self.selected_file_path, password_field.value
+            )
+            if success:
+                self.show_snackbar("导出成功")
+                self.page.pop_dialog()
+            else:
+                self.show_snackbar("导出失败")
+
+        def close_dialog(e):
+            self.page.pop_dialog()
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("导出账号"),
+            content=ft.Column(
+                [
+                    ft.Text("选择导出文件的保存位置"),
+                    ft.ElevatedButton(
+                        "选择保存位置",
+                        icon=ft.Icons.SAVE,
+                        on_click=pick_save_click,
+                    ),
+                    selected_path_text,
+                    password_field,
+                    ft.Text("提示：设置密码可保护您的账号数据", size=11, color=ft.Colors.OUTLINE),
+                    ft.Text("Android 会自动保存到 Download 目录", size=11, color=ft.Colors.OUTLINE),
+                ],
+                tight=True,
+                spacing=15,
+            ),
+            actions=[
+                ft.TextButton("取消", on_click=close_dialog),
+                ft.ElevatedButton("导出", on_click=do_export),
+            ],
+        )
+
+        self.page.show_dialog(dialog)
