@@ -1,14 +1,8 @@
 import flet as ft
 
 
-class StatsPage(ft.Column):
+class StatsPage:
     def __init__(self):
-        super().__init__()
-        self.expand = True
-        self.scroll = ft.ScrollMode.AUTO
-        self.spacing = 20
-
-        # 统计卡片区域
         self.total_text = ft.Text("--", size=32, weight=ft.FontWeight.BOLD)
         self.recent_text = ft.Text("--", size=32, weight=ft.FontWeight.BOLD)
 
@@ -69,7 +63,6 @@ class StatsPage(ft.Column):
             ]
         )
 
-        # 图表区域（预留）
         self.chart_card = ft.Card(
             content=ft.Container(
                 content=ft.Column(
@@ -94,7 +87,6 @@ class StatsPage(ft.Column):
             expand=True,
         )
 
-        # 操作记录区域（预留）
         self.activity_card = ft.Card(
             content=ft.Container(
                 content=ft.Column(
@@ -124,24 +116,23 @@ class StatsPage(ft.Column):
             expand=True,
         )
 
-        self.controls = [
-            ft.Text("统计概览", size=24, weight=ft.FontWeight.BOLD),
-            ft.Divider(),
-            self.stats_row,
-            ft.ResponsiveRow(
-                [
-                    ft.Container(content=self.chart_card, col={"sm": 12, "lg": 8}),
-                    ft.Container(content=self.activity_card, col={"sm": 12, "lg": 4}),
-                ]
-            ),
-        ]
-
-    def did_mount(self):
-        """页面挂载时加载统计数据"""
-        self.load_stats()
+    def build(self):
+        return ft.Column(
+            [
+                ft.Text("统计概览", size=24, weight=ft.FontWeight.BOLD),
+                ft.Divider(),
+                self.stats_row,
+                ft.ResponsiveRow(
+                    [
+                        ft.Container(content=self.chart_card, col={"sm": 12, "lg": 8}),
+                        ft.Container(content=self.activity_card, col={"sm": 12, "lg": 4}),
+                    ]
+                ),
+            ],
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+            spacing=20,
+        )
 
     def load_stats(self):
-        """加载统计数据"""
-        # 预留：从 data_manager 获取统计数据
-        # 这里暂时显示静态数据
         pass

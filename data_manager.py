@@ -193,12 +193,13 @@ class DataManager:
             # 规范化路径
             filepath = _normalize_path(filepath)
             
-            # 处理 Android Content URI
             if filepath.startswith("content://"):
-                # 在 Android 上，使用应用私有目录作为备选
-                from android.os import Environment
-                download_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                filepath = os.path.join(download_dir.getAbsolutePath(), "accounts_backup.txt")
+                try:
+                    from android.os import Environment
+                    download_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                    filepath = os.path.join(download_dir.getAbsolutePath(), "accounts_backup.txt")
+                except ImportError:
+                    filepath = os.path.join(os.path.expanduser('~'), "accounts_backup.txt")
             
             json_str = json.dumps(self.accounts, ensure_ascii=False, indent=2)
             

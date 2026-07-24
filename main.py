@@ -1,7 +1,11 @@
+import os
+
 import flet as ft
 from pages.account_page import AccountPage
-from pages.stats_page import StatsPage
+from pages.accounting_page import AccountingPage
+from pages.growth_page import GrowthPage
 from data_manager import DataManager
+from platform_utils import get_app_data_dir
 
 
 def main(page: ft.Page):
@@ -9,35 +13,18 @@ def main(page: ft.Page):
     page.theme_mode = ft.ThemeMode.LIGHT
     page.bgcolor = ft.Colors.WHITE
     page.padding = 0
-    page.window.width = 900
-    page.window.height = 600
 
-    data_manager = DataManager()
+    app_data_dir = get_app_data_dir()
+    accounts_file = os.path.join(app_data_dir, "accounts.json")
+    data_manager = DataManager(data_file=accounts_file)
 
-    # 文件选择器（用于导入导出）- 必须在页面 overlay 中注册
-    # 注意：Flet 0.80+ 不要在构造函数中传 on_result，创建后再设置
-    file_picker = ft.FilePicker()
-    page.overlay.append(file_picker)
+    content_container = ft.Container(expand=True, padding=10)
 
-    # 内容区域
-    content_area = ft.Container(expand=True, padding=20)
-
-    def switch_page(index: int):
-        """切换页面"""
-        rail.selected_index = index
-        if index == 0:
-            content_area.content = AccountPage(data_manager, page, file_picker)
-        else:
-            content_area.content = StatsPage()
-        page.update()
-
-    # 导航栏
-    rail = ft.NavigationRail(
+    nav_rail = ft.NavigationRail(
         selected_index=0,
         label_type=ft.NavigationRailLabelType.ALL,
-        min_width=100,
-        min_extended_width=200,
-        group_alignment=-0.9,
+        min_width=80,
+        min_extended_width=160,
         destinations=[
             ft.NavigationRailDestination(
                 icon=ft.Icons.PEOPLE_OUTLINE,
@@ -45,27 +32,27 @@ def main(page: ft.Page):
                 label="账号管理",
             ),
             ft.NavigationRailDestination(
-                icon=ft.Icons.ANALYTICS_OUTLINED,
-                selected_icon=ft.Icons.ANALYTICS,
-                label="统计页面",
+                icon=ft.Icons.BOOKMARKS_OUTLINED,
+                selected_icon=ft.Icons.BOOKMARKS,
+                label="记账本",
+            ),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.TRENDING_UP_OUTLINED,
+                selected_icon=ft.Icons.TRENDING_UP,
+                label="养成规划",
             ),
         ],
-        on_change=lambda e: switch_page(e.control.selected_index),
     )
 
-    # 主布局
     page.add(
         ft.Column(
             [
-                ft.AppBar(
-                    title=ft.Text("账号管理系统"),
-                    bgcolor=ft.Colors.PRIMARY_CONTAINER,
-                ),
+                ft.AppBar(title=ft.Text("账号管理系统"), bgcolor=ft.Colors.PRIMARY_CONTAINER),
                 ft.Row(
                     [
-                        rail,
+                        nav_rail,
                         ft.VerticalDivider(width=1),
-                        content_area,
+                        content_container,
                     ],
                     expand=True,
                 ),
@@ -75,7 +62,17 @@ def main(page: ft.Page):
         )
     )
 
-    # 初始化第一个页面
+    def switch_page(index: int):
+        nav_rail.selected_index = index
+        if index == 0:
+            content_container.content = AccountPage(data_manager, page)
+        elif index == 1:
+            content_container.content = AccountingPage(data_manager, page)
+        else:
+            content_container.content = GrowthPage(data_manager, page)
+        page.update()
+
+    nav_rail.on_change = lambda e: switch_page(e.control.selected_index)
     switch_page(0)
 
 

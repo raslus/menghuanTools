@@ -1,0 +1,9 @@
+name: menghuan_tools
+channels:
+  - defaults
+dependencies:
+  - python>=3.9
+  - pip
+  - pip:
+    - flet>=0.86.3
+    - cryptography>=3.4.8
