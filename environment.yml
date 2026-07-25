@@ -5,5 +5,11 @@ dependencies:
   - python>=3.9
   - pip
   - pip:
-    - flet>=0.86.3
+    - flet>=0.86.2
     - cryptography>=3.4.8
+    - opencv-python>=4.8.0
+    - numpy>=1.24.0
+    - mss>=9.0.0
+    - pyautogui>=0.9.54
+    - paddlepaddle>=2.5.0
+    - paddleocr>=2.7.0

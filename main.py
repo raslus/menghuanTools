@@ -4,6 +4,7 @@ import flet as ft
 from pages.account_page import AccountPage
 from pages.accounting_page import AccountingPage
 from pages.growth_page import GrowthPage
+from pages.ghost_hunter_page import GhostHunterPage
 from data_manager import DataManager
 from platform_utils import get_app_data_dir
 
@@ -41,6 +42,11 @@ def main(page: ft.Page):
                 selected_icon=ft.Icons.TRENDING_UP,
                 label="养成规划",
             ),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.STAR_OUTLINED,
+                selected_icon=ft.Icons.STAR,
+                label="抓鬼辅助",
+            ),
         ],
     )
 
@@ -68,8 +74,10 @@ def main(page: ft.Page):
             content_container.content = AccountPage(data_manager, page)
         elif index == 1:
             content_container.content = AccountingPage(data_manager, page)
-        else:
+        elif index == 2:
             content_container.content = GrowthPage(data_manager, page)
+        else:
+            content_container.content = GhostHunterPage(data_manager, page)
         page.update()
 
     nav_rail.on_change = lambda e: switch_page(e.control.selected_index)
