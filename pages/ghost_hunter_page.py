@@ -121,6 +121,8 @@ class CoordinateOCR:
         self._model_dir = None
         self.custom_region = None       # 自定义截取区域 (left, top, right, bottom)
         self.locked_window_title = None  # 锁定的窗口标题
+        self.map_panel_region = None     # 地图面板区域 (left, top, right, bottom)
+        self.ghost_task_region = None    # 抓鬼任务区域 (left, top, right, bottom)
         self._setup_model_dir()
 
     def _setup_model_dir(self):
@@ -178,7 +180,12 @@ class CoordinateOCR:
         return img
 
     def preprocess_image(self, img):
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        scale_factor = 2
+        
+        scaled = cv2.resize(img, None, fx=scale_factor, fy=scale_factor, 
+                           interpolation=cv2.INTER_CUBIC)
+        
+        gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
         
         _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
@@ -210,12 +217,13 @@ class CoordinateOCR:
         "S": "5", "s": "5",
         "B": "8",
         "已": "已", "巳": "已",
+        "东": "东", "布": "东", "冻": "东", "栋": "东",
+        "海": "海", "悔": "海", "晦": "海", "渖": "海", "沈": "海",
+        "湾": "湾", "弯": "湾", "筲": "湾", "梢": "湾", "宵": "湾",
         "长": "长", "怅": "长", "伥": "长",
         "寿": "寿", "受": "寿", "授": "寿",
         "村": "村", "材": "村", "寸": "村",
         "城": "城", "成": "城", "诚": "城",
-        "海": "海", "悔": "海", "晦": "海",
-        "湾": "湾", "弯": "湾", "弯": "湾",
         "江": "江", "扛": "江",
         "南": "南", "喃": "南", "楠": "南",
         "野": "野", "也": "野", "冶": "野",
@@ -235,9 +243,8 @@ class CoordinateOCR:
         "寺": "寺", "侍": "寺", "诗": "寺",
         "门": "门", "们": "门",
         "宫": "宫", "官": "宫", "弓": "宫",
-        "龙": "龙", "龙": "龙", "拢": "龙",
+        "龙": "龙", "拢": "龙",
         "天": "天", "夫": "天", "夭": "天",
-        "府": "府", "俯": "府",
         "傲": "傲", "敖": "傲", "遨": "傲",
         "来": "来", "莱": "来", "涞": "来",
         "花": "花", "华": "花", "化": "花",
@@ -249,7 +256,6 @@ class CoordinateOCR:
         "唐": "唐", "塘": "唐", "糖": "唐",
         "官": "官", "管": "官", "观": "官",
         "月": "月", "日": "月", "目": "月",
-        "境": "境", "镜": "境",
     }
 
     def _correct_text(self, text):
@@ -257,6 +263,48 @@ class CoordinateOCR:
         for char in text:
             corrected.append(self.CHAR_REPLACEMENTS.get(char, char))
         return "".join(corrected)
+
+    def _levenshtein_distance(self, s1, s2):
+        m, n = len(s1), len(s2)
+        dp = [[0] * (n + 1) for _ in range(m + 1)]
+        
+        for i in range(m + 1):
+            dp[i][0] = i
+        for j in range(n + 1):
+            dp[0][j] = j
+        
+        for i in range(1, m + 1):
+            for j in range(1, n + 1):
+                if s1[i-1] == s2[j-1]:
+                    cost = 0
+                else:
+                    cost = 1
+                dp[i][j] = min(
+                    dp[i-1][j] + 1,
+                    dp[i][j-1] + 1,
+                    dp[i-1][j-1] + cost
+                )
+        
+        return dp[m][n]
+
+    def _fuzzy_match_map_name(self, text):
+        if not text:
+            return None
+        
+        best_match = None
+        min_distance = float('inf')
+        
+        for map_name in self.MAP_NAMES:
+            distance = self._levenshtein_distance(text, map_name)
+            similarity = 1 - distance / max(len(text), len(map_name))
+            
+            if distance < min_distance:
+                min_distance = distance
+                best_match = map_name
+        
+        if min_distance <= 2:
+            return best_match
+        return None
 
     def _is_ghost_hunting_text(self, text):
         for keyword in self.GHOST_KEYWORDS:
@@ -291,16 +339,20 @@ class CoordinateOCR:
             all_text = ""
             
             if self.custom_region:
-                window_left, window_top, window_right, window_bottom = self.custom_region
-                map_panel_width = 220
-                map_panel_height = 85
+                map_region = None
+                if self.map_panel_region:
+                    map_region = self.map_panel_region
+                else:
+                    window_left, window_top, window_right, window_bottom = self.custom_region
+                    map_panel_width = 220
+                    map_panel_height = 85
+                    map_region = (
+                        window_left,
+                        window_top,
+                        window_left + map_panel_width,
+                        window_top + map_panel_height
+                    )
                 
-                map_region = (
-                    window_left,
-                    window_top,
-                    window_left + map_panel_width,
-                    window_top + map_panel_height
-                )
                 img = self.capture_screen_region(map_region)
                 logger.debug(f"地图面板区域截图: {map_region}")
                 
@@ -310,7 +362,18 @@ class CoordinateOCR:
                     texts = ocr_image(processed_img, "地图面板(预处理)")
                 
                 all_text = " ".join(texts)
-    
+
+                if self.ghost_task_region:
+                    img = self.capture_screen_region(self.ghost_task_region)
+                    logger.debug(f"抓鬼任务区域截图: {self.ghost_task_region}")
+                    
+                    texts = ocr_image(img, "抓鬼任务")
+                    if not texts:
+                        processed_img = self.preprocess_image(img)
+                        texts = ocr_image(processed_img, "抓鬼任务(预处理)")
+                    
+                    all_text += " " + " ".join(texts)
+
             else:
                 screen_width, screen_height = self.get_screen_size()
                 
@@ -419,6 +482,11 @@ class CoordinateOCR:
         for pattern, name in special_patterns:
             if re.search(pattern, text):
                 return name
+        
+        fuzzy_match = self._fuzzy_match_map_name(text)
+        if fuzzy_match:
+            logger.debug(f"模糊匹配地图名: '{text}' -> '{fuzzy_match}'")
+            return fuzzy_match
         
         return None
 
@@ -860,6 +928,20 @@ class GhostHunterPage(ft.Column):
             "🔒 锁定梦幻西游",
             icon=ft.Icons.LOCK_OUTLINE,
             on_click=self._lock_game_window
+        )
+
+        self.select_map_panel_btn = ft.Button(
+            "📍 框选地图面板",
+            icon=ft.Icons.MAP,
+            disabled=True,
+            on_click=self._start_select_map_panel
+        )
+
+        self.select_ghost_task_btn = ft.Button(
+            "👻 框选抓鬼任务",
+            icon=ft.Icons.TASK,
+            disabled=True,
+            on_click=self._start_select_ghost_task
         )
 
         self.window_status_text = ft.Text(
@@ -1537,6 +1619,10 @@ class GhostHunterPage(ft.Column):
                         self.window_status_text,
                         self.unlock_btn,
                     ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ft.Row([
+                        self.select_map_panel_btn,
+                        self.select_ghost_task_btn,
+                    ], spacing=10, alignment=ft.MainAxisAlignment.CENTER),
                 ], spacing=10),
                 padding=15,
             ),
@@ -1553,6 +1639,8 @@ class GhostHunterPage(ft.Column):
                 self.window_status_text.color = ft.Colors.GREEN
                 self.lock_window_btn.visible = False
                 self.unlock_btn.visible = True
+                self.select_map_panel_btn.disabled = False
+                self.select_ghost_task_btn.disabled = False
                 self._page.show_dialog(ft.SnackBar(content=ft.Text(f"已锁定窗口: {title}")))
                 logger.info(f"窗口锁定成功: {title}, 区域: {region}")
             else:
@@ -1570,9 +1658,173 @@ class GhostHunterPage(ft.Column):
         self.window_status_text.color = ft.Colors.GREY
         self.lock_window_btn.visible = True
         self.unlock_btn.visible = False
+        self.select_map_panel_btn.disabled = True
+        self.select_ghost_task_btn.disabled = True
         self._page.show_dialog(ft.SnackBar(content=ft.Text("OCR区域锁定已解除")))
         logger.info("窗口锁定已解除")
         self._page.update()
+
+    def _start_select_map_panel(self, e):
+        """开始框选地图面板区域"""
+        self._start_region_selection("map_panel")
+
+    def _start_select_ghost_task(self, e):
+        """开始框选抓鬼任务区域"""
+        self._start_region_selection("ghost_task")
+
+    def _start_region_selection(self, region_type):
+        """启动区域选择"""
+        self._region_selection_type = region_type
+        t = threading.Thread(target=self._run_region_selection, daemon=True)
+        t.start()
+
+    def _run_region_selection(self):
+        """运行区域选择逻辑"""
+        import tkinter as tk
+        import ctypes
+        
+        user32 = ctypes.windll.user32
+        
+        root = tk.Tk()
+        root.attributes("-fullscreen", True)
+        root.attributes("-topmost", True)
+        
+        transparent_color = "#000001"
+        root.config(bg=transparent_color)
+        root.wm_attributes('-transparentcolor', transparent_color)
+        
+        canvas = tk.Canvas(root, bg=transparent_color, highlightthickness=0, cursor="crosshair")
+        canvas.pack(fill=tk.BOTH, expand=True)
+        
+        canvas.create_rectangle(
+            0, 0, root.winfo_screenwidth(), root.winfo_screenheight(),
+            fill="black", outline="", stipple="gray50"
+        )
+        
+        canvas.create_text(root.winfo_screenwidth() // 2, root.winfo_screenheight() // 2,
+                          text="按住鼠标左键拖动框选区域，按ESC取消",
+                          fill="white", font=("Microsoft YaHei", 16),
+                          anchor=tk.CENTER, tag="hint")
+        
+        start_x = start_y = end_x = end_y = 0
+        rect_id = None
+        fill_id = None
+        selected_region = None
+        
+        def on_press(event):
+            nonlocal start_x, start_y, rect_id, fill_id
+            start_x, start_y = event.x, event.y
+            canvas.delete("rect", "fill")
+            
+            fill_id = canvas.create_rectangle(start_x, start_y, start_x, start_y,
+                                              fill="#00ffff", stipple="gray50",
+                                              outline="", tag="fill")
+            
+            rect_id = canvas.create_rectangle(start_x, start_y, start_x, start_y, 
+                                              outline="red", width=2, tag="rect")
+        
+        def on_drag(event):
+            nonlocal end_x, end_y, rect_id, fill_id
+            end_x, end_y = event.x, event.y
+            
+            canvas.delete("rect", "fill")
+            
+            fill_id = canvas.create_rectangle(start_x, start_y, end_x, end_y,
+                                              fill="#00ffff", stipple="gray50",
+                                              outline="", tag="fill")
+            
+            rect_id = canvas.create_rectangle(start_x, start_y, end_x, end_y, 
+                                              outline="red", width=2, tag="rect")
+        
+        def on_release(event):
+            nonlocal end_x, end_y, selected_region
+            end_x, end_y = event.x, event.y
+            
+            region = (min(start_x, end_x), min(start_y, end_y), 
+                     max(start_x, end_x), max(start_y, end_y))
+            
+            if region[2] - region[0] > 10 and region[3] - region[1] > 10:
+                selected_region = region
+                if self._region_selection_type == "map_panel":
+                    self._save_map_panel_region(region)
+                else:
+                    self._save_ghost_task_region(region)
+            
+            root.quit()
+        
+        def on_esc(event):
+            root.quit()
+        
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>", on_drag)
+        canvas.bind("<ButtonRelease-1>", on_release)
+        root.bind("<Escape>", on_esc)
+        
+        root.after(100, lambda: user32.SetForegroundWindow(root.winfo_id()))
+        root.grab_set_global()
+        root.focus_set()
+        root.focus_force()
+        
+        root.mainloop()
+        
+        try:
+            root.destroy()
+        except:
+            pass
+        
+        if selected_region:
+            region_name = "地图面板" if self._region_selection_type == "map_panel" else "抓鬼任务"
+            logger.info(f"区域选择完成: {region_name} - {selected_region}")
+
+    def _save_map_panel_region(self, region):
+        """保存地图面板区域配置"""
+        config_dir = get_app_data_dir()
+        config_path = os.path.join(config_dir, "region_config.json")
+        
+        config = {}
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+            except:
+                pass
+        
+        config["map_panel_region"] = region
+        config["locked_window_region"] = self.ocr.custom_region
+        
+        try:
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+        except:
+            pass
+        
+        self.ocr.map_panel_region = region
+        logger.info(f"地图面板区域已保存: {region}")
+
+    def _save_ghost_task_region(self, region):
+        """保存抓鬼任务区域配置"""
+        config_dir = get_app_data_dir()
+        config_path = os.path.join(config_dir, "region_config.json")
+        
+        config = {}
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+            except:
+                pass
+        
+        config["ghost_task_region"] = region
+        config["locked_window_region"] = self.ocr.custom_region
+        
+        try:
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+        except:
+            pass
+        
+        self.ocr.ghost_task_region = region
+        logger.info(f"抓鬼任务区域已保存: {region}")
 
     def did_mount(self):
         """页面挂载后自动锁定梦幻西游窗口"""
@@ -1585,6 +1837,8 @@ class GhostHunterPage(ft.Column):
                 self.window_status_text.color = ft.Colors.GREEN
                 self.lock_window_btn.visible = False
                 self.unlock_btn.visible = True
+                self.select_map_panel_btn.disabled = False
+                self.select_ghost_task_btn.disabled = False
                 logger.info(f"自动锁定窗口成功: {title}, 区域: {region}")
                 self._page.update()
         except Exception:
