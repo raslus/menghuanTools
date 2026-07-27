@@ -1,4 +1,5 @@
 import os
+import sys
 
 import flet as ft
 from pages.account_page import AccountPage
@@ -7,9 +8,12 @@ from pages.growth_page import GrowthPage
 from pages.ghost_hunter_page import GhostHunterPage
 from data_manager import DataManager
 from platform_utils import get_app_data_dir
+from logger_setup import logger
 
 
 def main(page: ft.Page):
+    logger.info("应用启动")
+    logger.info(f"运行模式: {'打包模式 (frozen)' if getattr(sys, 'frozen', False) else '开发模式'}")
     page.title = "账号管理系统"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.bgcolor = ft.Colors.WHITE

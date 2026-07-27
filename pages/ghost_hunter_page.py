@@ -8,33 +8,159 @@ import threading
 import time
 import json
 import os
+import sys
 import urllib.request
 import requests
 from PIL import Image as PILImage
 from platform_utils import get_app_data_dir
+from logger_setup import logger
 
 try:
-    from paddleocr import PaddleOCR
-    _paddleocr_available = True
+    import easyocr
+    _easyocr_available = True
 except ImportError:
-    _paddleocr_available = False
+    _easyocr_available = False
+
+import ctypes
+from ctypes import wintypes
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+
+def find_window_by_title(substring: str):
+    """查找标题包含指定文本的第一个可见窗口
+
+    Args:
+        substring: 窗口标题包含的文本（如"梦幻西游"）
+
+    Returns:
+        tuple: (window_title, (left, top, right, bottom)) 或 None
+    """
+    user32 = ctypes.windll.user32
+    candidates = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def enum_callback(hwnd, lparam):
+        if user32.IsWindowVisible(hwnd):
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buffer = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buffer, length + 1)
+                title = buffer.value
+                if substring in title:
+                    if "聊天窗口" in title or "聊天框" in title:
+                        return True
+                    
+                    window_rect = wintypes.RECT()
+                    user32.GetWindowRect(hwnd, ctypes.byref(window_rect))
+                    
+                    client_rect = wintypes.RECT()
+                    user32.GetClientRect(hwnd, ctypes.byref(client_rect))
+                    
+                    client_left_top = POINT(0, 0)
+                    user32.ClientToScreen(hwnd, ctypes.byref(client_left_top))
+                    
+                    client_right_bottom = POINT(client_rect.right, client_rect.bottom)
+                    user32.ClientToScreen(hwnd, ctypes.byref(client_right_bottom))
+                    
+                    left = client_left_top.x
+                    top = client_left_top.y
+                    right = client_right_bottom.x
+                    bottom = client_right_bottom.y
+                    
+                    if right - left < 100 or bottom - top < 100:
+                        left = window_rect.left
+                        top = window_rect.top
+                        right = window_rect.right
+                        bottom = window_rect.bottom
+                    
+                    width = right - left
+                    height = bottom - top
+                    
+                    is_main = False
+                    score = 0
+                    
+                    if title.startswith("梦幻西游"):
+                        score += 10
+                    if "Online" in title or "online" in title:
+                        score += 5
+                    if width >= 800 and height >= 600:
+                        score += 10
+                        is_main = True
+                    if "聊天" not in title and "聊天框" not in title:
+                        score += 5
+                    
+                    candidates.append({
+                        "title": title,
+                        "rect": (left, top, right, bottom),
+                        "score": score,
+                        "is_main": is_main,
+                    })
+        return True
+
+    user32.EnumWindows(enum_callback, 0)
+    
+    if not candidates:
+        return None
+    
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    
+    best = candidates[0]
+    logger.debug(f"找到{len(candidates)}个匹配窗口，最佳匹配: {best['title']} (分数: {best['score']})")
+    return (best["title"], best["rect"])
 
 
 class CoordinateOCR:
     def __init__(self):
-        self.screen_capture = mss.mss()
+        self.screen_capture = mss.MSS()
         self.monitor = self.screen_capture.monitors[1]
         self.ocr = None
         self._ocr_initialized = False
+        self._model_dir = None
+        self.custom_region = None       # 自定义截取区域 (left, top, right, bottom)
+        self.locked_window_title = None  # 锁定的窗口标题
+        self._setup_model_dir()
+
+    def _setup_model_dir(self):
+        if getattr(sys, 'frozen', False):
+            self._model_dir = os.path.join(os.path.dirname(sys.executable), 'models', 'easyocr')
+        else:
+            self._model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models', 'easyocr')
+        logger.debug(f"模型目录: {self._model_dir}")
+
+    def set_window_region(self, region, window_title=None):
+        """设置自定义截取区域，锁定后OCR只在该区域内识别
+
+        Args:
+            region: (left, top, right, bottom) 屏幕坐标区域
+            window_title: 窗口标题（用于显示）
+        """
+        self.custom_region = region
+        self.locked_window_title = window_title
+        logger.info(f"OCR区域已锁定: {region}, 窗口: {window_title}")
+
+    def clear_window_region(self):
+        """清除自定义截取区域，恢复全屏识别"""
+        self.custom_region = None
+        self.locked_window_title = None
+        logger.info("OCR区域锁定已清除")
+
+    def is_window_locked(self):
+        """检查是否已锁定窗口区域"""
+        return self.custom_region is not None
 
     def _init_ocr(self):
-        if self._ocr_initialized or not _paddleocr_available:
+        if self._ocr_initialized or not _easyocr_available:
             return
         try:
-            self.ocr = PaddleOCR(use_angle_cls=True, lang='ch', show_log=False)
+            logger.info("正在初始化EasyOCR (CPU模式)...")
+            self.ocr = easyocr.Reader(['ch_sim', 'en'], gpu=False, model_storage_directory=self._model_dir)
             self._ocr_initialized = True
-        except Exception:
-            pass
+            logger.info("EasyOCR初始化成功")
+        except Exception as e:
+            logger.error(f"EasyOCR初始化失败: {e}")
 
     def capture_screen_region(self, region=None):
         if region:
@@ -49,68 +175,250 @@ class CoordinateOCR:
 
         screenshot = self.screen_capture.grab(monitor)
         img = np.array(screenshot)
-        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
         return img
+
+    def preprocess_image(self, img):
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        kernel = np.ones((2, 2), np.uint8)
+        cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel)
+        
+        enhanced = cv2.equalizeHist(cleaned)
+        
+        return enhanced
 
     def get_screen_size(self):
         primary_monitor = self.screen_capture.monitors[1]
         return primary_monitor["width"], primary_monitor["height"]
 
+    MAP_NAMES = [
+        "建邺城", "东海湾", "江南野外", "长安城", "大唐国境", "大唐境外",
+        "长寿村", "长寿郊外", "傲来国", "花果山", "月宫", "大唐官府",
+        "方寸山", "化生寺", "女儿村", "魔王寨", "狮陀岭", "地府", "盘丝洞",
+        "龙宫", "天宫", "五庄观", "普陀山", "境外"
+    ]
+
+    GHOST_KEYWORDS = ["鬼", "钟馗", "捉鬼", "抓鬼", "任务", "领取"]
+
+    CHAR_REPLACEMENTS = {
+        "O": "0", "o": "0", "Q": "0",
+        "I": "1", "l": "1", "i": "1",
+        "Z": "2", "z": "2",
+        "S": "5", "s": "5",
+        "B": "8",
+        "已": "已", "巳": "已",
+        "长": "长", "怅": "长", "伥": "长",
+        "寿": "寿", "受": "寿", "授": "寿",
+        "村": "村", "材": "村", "寸": "村",
+        "城": "城", "成": "城", "诚": "城",
+        "海": "海", "悔": "海", "晦": "海",
+        "湾": "湾", "弯": "湾", "弯": "湾",
+        "江": "江", "扛": "江",
+        "南": "南", "喃": "南", "楠": "南",
+        "野": "野", "也": "野", "冶": "野",
+        "外": "外", "处": "外",
+        "国": "国", "囯": "国", "圀": "国",
+        "境": "境", "镜": "境", "竟": "境",
+        "府": "府", "俯": "府", "腑": "府",
+        "山": "山", "出": "山", "仙": "山",
+        "观": "观", "官": "观", "关": "观",
+        "陀": "陀", "驼": "陀", "鸵": "陀",
+        "普": "普", "谱": "普", "葡": "普",
+        "洞": "洞", "同": "洞", "侗": "洞",
+        "丝": "丝", "思": "丝", "私": "丝",
+        "岭": "岭", "领": "岭", "玲": "岭",
+        "寨": "寨", "塞": "寨", "赛": "寨",
+        "王": "王", "主": "王", "玉": "王",
+        "寺": "寺", "侍": "寺", "诗": "寺",
+        "门": "门", "们": "门",
+        "宫": "宫", "官": "宫", "弓": "宫",
+        "龙": "龙", "龙": "龙", "拢": "龙",
+        "天": "天", "夫": "天", "夭": "天",
+        "府": "府", "俯": "府",
+        "傲": "傲", "敖": "傲", "遨": "傲",
+        "来": "来", "莱": "来", "涞": "来",
+        "花": "花", "华": "花", "化": "花",
+        "果": "果", "裹": "果", "过": "果",
+        "女": "女", "汝": "女", "如": "女",
+        "儿": "儿", "而": "儿", "尔": "儿",
+        "方": "方", "放": "方", "芳": "方",
+        "寸": "寸", "村": "寸", "忖": "寸",
+        "唐": "唐", "塘": "唐", "糖": "唐",
+        "官": "官", "管": "官", "观": "官",
+        "月": "月", "日": "月", "目": "月",
+        "境": "境", "镜": "境",
+    }
+
+    def _correct_text(self, text):
+        corrected = []
+        for char in text:
+            corrected.append(self.CHAR_REPLACEMENTS.get(char, char))
+        return "".join(corrected)
+
+    def _is_ghost_hunting_text(self, text):
+        for keyword in self.GHOST_KEYWORDS:
+            if keyword in text:
+                return True
+        return False
+
     def recognize_coordinates(self, search_region=None):
-        if not _paddleocr_available:
+        if not _easyocr_available:
+            logger.warning("EasyOCR未安装，无法进行文字识别")
             return None
-        
+    
         self._init_ocr()
         if self.ocr is None:
+            logger.error("OCR初始化失败")
             return None
-
+    
+        def ocr_image(img, region_desc):
+            texts = []
+            try:
+                result = self.ocr.readtext(img)
+                if result and len(result) > 0:
+                    for line in result:
+                        if len(line) > 1:
+                            texts.append(line[1])
+                    logger.debug(f"{region_desc} OCR识别结果: {texts}")
+            except Exception as e:
+                logger.debug(f"{region_desc} OCR识别异常: {e}")
+            return texts
+        
         try:
-            if search_region:
-                img = self.capture_screen_region(search_region)
+            all_text = ""
+            
+            if self.custom_region:
+                window_left, window_top, window_right, window_bottom = self.custom_region
+                map_panel_width = 220
+                map_panel_height = 85
+                
+                map_region = (
+                    window_left,
+                    window_top,
+                    window_left + map_panel_width,
+                    window_top + map_panel_height
+                )
+                img = self.capture_screen_region(map_region)
+                logger.debug(f"地图面板区域截图: {map_region}")
+                
+                texts = ocr_image(img, "地图面板")
+                if not texts:
+                    processed_img = self.preprocess_image(img)
+                    texts = ocr_image(processed_img, "地图面板(预处理)")
+                
+                all_text = " ".join(texts)
+    
             else:
                 screen_width, screen_height = self.get_screen_size()
-                taskbar_height = 50
-                taskbar_region = (0, screen_height - taskbar_height, screen_width, screen_height)
-                img = self.capture_screen_region(taskbar_region)
-
-            result = self.ocr.ocr(img, cls=True)
-            
-            if result and len(result) > 0:
-                all_text = ""
-                for line in result[0]:
-                    if line and len(line) > 1:
-                        all_text += line[1][0] + " "
                 
-                coords = self._parse_coordinates(all_text)
-                if coords:
-                    return coords
-
-            full_screen_img = self.capture_screen_region()
-            result_full = self.ocr.ocr(full_screen_img, cls=True)
-            
-            if result_full and len(result_full) > 0:
-                all_text = ""
-                for line in result_full[0]:
-                    if line and len(line) > 1:
-                        all_text += line[1][0] + " "
+                if search_region:
+                    img = self.capture_screen_region(search_region)
+                    logger.debug(f"搜索区域截图: {search_region}")
+                else:
+                    map_panel_width = 220
+                    map_panel_height = 85
+                    map_region = (0, 0, map_panel_width, map_panel_height)
+                    img = self.capture_screen_region(map_region)
+                    logger.debug(f"左上角地图面板区域截图: {map_region}")
+    
+                texts = ocr_image(img, "地图面板")
+                if not texts:
+                    processed_img = self.preprocess_image(img)
+                    texts = ocr_image(processed_img, "地图面板(预处理)")
                 
-                return self._parse_coordinates(all_text)
+                all_text = " ".join(texts)
+    
+            if not all_text.strip():
+                logger.debug("未识别到任何文字")
+                return None
             
+            corrected_text = self._correct_text(all_text)
+            if corrected_text != all_text:
+                logger.debug(f"文本修正: '{all_text}' -> '{corrected_text}'")
+            all_text = corrected_text
+    
+            map_name = self._extract_map_name(all_text)
+            is_ghost_hunting = self._is_ghost_hunting_text(all_text)
+            
+            pattern = r'(\d{1,3})\s*[,.，。、]\s*(\d{1,3})'
+            match = re.search(pattern, all_text)
+            
+            if not match:
+                pattern2 = r'(\d{1,3})\s+(\d{1,3})'
+                match = re.search(pattern2, all_text)
+            
+            if match:
+                coords = (int(match.group(1)), int(match.group(2)))
+                
+                if is_ghost_hunting:
+                    result_data = {
+                        "type": "ghost",
+                        "coords": coords,
+                        "map_name": map_name,
+                        "text": all_text
+                    }
+                    logger.info(f"识别到抓鬼任务: {map_name} ({coords[0]}, {coords[1]})")
+                else:
+                    result_data = {
+                        "type": "position",
+                        "coords": coords,
+                        "map_name": map_name,
+                        "text": all_text
+                    }
+                    logger.info(f"识别到当前位置: {map_name} ({coords[0]}, {coords[1]})")
+                
+                return result_data
+            
+            if map_name:
+                return {
+                    "type": "position",
+                    "coords": None,
+                    "map_name": map_name,
+                    "text": all_text
+                }
+    
+            logger.debug("未识别到坐标和地图")
             return None
-            
+    
         except Exception as e:
+            logger.error(f"OCR识别异常: {e}")
             return None
 
-    def _parse_coordinates(self, text):
-        pattern = r'(\d{1,3})\s*[,.，。、]\s*(\d{1,3})'
-        match = re.search(pattern, text)
-        if match:
-            return int(match.group(1)), int(match.group(2))
+    def _extract_map_name(self, text):
+        for map_name in self.MAP_NAMES:
+            if map_name in text:
+                return map_name
         
-        pattern2 = r'(\d{1,3})\s+(\d{1,3})'
-        match2 = re.search(pattern2, text)
-        if match2:
-            return int(match2.group(1)), int(match2.group(2))
+        special_patterns = [
+            (r'(长寿).*(村|郊)', '长寿村'),
+            (r'(建邺).*(城|镇)', '建邺城'),
+            (r'(长安).*(城)', '长安城'),
+            (r'(大唐).*(国境|境外)', '大唐国境'),
+            (r'(东海).*(湾)', '东海湾'),
+            (r'(江南).*(野外)', '江南野外'),
+            (r'(傲来).*(国)', '傲来国'),
+            (r'(花果).*(山)', '花果山'),
+            (r'(女儿).*(村)', '女儿村'),
+            (r'(普陀).*(山)', '普陀山'),
+            (r'(五庄).*(观)', '五庄观'),
+            (r'(方寸).*(山)', '方寸山'),
+            (r'(天宫)', '天宫'),
+            (r'(龙宫)', '龙宫'),
+            (r'(地府)', '地府'),
+            (r'(盘丝).*(洞)', '盘丝洞'),
+            (r'(狮陀).*(岭)', '狮陀岭'),
+            (r'(魔王).*(寨)', '魔王寨'),
+            (r'(化生).*(寺)', '化生寺'),
+            (r'(大唐).*(官府)', '大唐官府'),
+            (r'(月宫)', '月宫'),
+        ]
+        
+        for pattern, name in special_patterns:
+            if re.search(pattern, text):
+                return name
         
         return None
 
@@ -142,6 +450,20 @@ class GhostCoordinatePredictor:
                 json.dump(self.learning_data, f, ensure_ascii=False, indent=2)
         except:
             pass
+
+    def get_position_info(self, x, y, map_name=""):
+        return {
+            "type": "position",
+            "center_x": x,
+            "center_y": y,
+            "x_min": x - 5,
+            "x_max": x + 5,
+            "y_min": y - 5,
+            "y_max": y + 5,
+            "radius_x": 5,
+            "radius_y": 5,
+            "map_name": map_name,
+        }
 
     def predict_range(self, fake_x, fake_y, map_name=""):
         base_radius = 30
@@ -283,6 +605,9 @@ class PredictionOverlay:
         self.prediction_data = None
         self.thread = None
         self.update_event = threading.Event()
+        self.map_image = None
+        self.map_photo = None
+        self.force_refresh = False
 
     def draw_prediction(self, prediction):
         self.prediction_data = prediction
@@ -290,8 +615,22 @@ class PredictionOverlay:
             self.start()
         self.update_event.set()
 
+    def set_map_image(self, image_path):
+        if os.path.exists(image_path):
+            self.map_image = image_path
+            self.force_refresh = True
+            if self.root:
+                self.update_event.set()
+
+    def clear_prediction(self):
+        self.prediction_data = None
+        self.force_refresh = True
+        if self.root:
+            self.update_event.set()
+
     def _init_overlay(self):
         import tkinter as tk
+        from PIL import Image, ImageTk
         
         self.root = tk.Tk()
         self.root.title("")
@@ -304,18 +643,19 @@ class PredictionOverlay:
         
         self.canvas = tk.Canvas(
             self.root,
-            width=500,
-            height=300,
+            width=256,
+            height=256,
             bg=transparent_color,
             highlightthickness=0
         )
         self.canvas.pack()
         
-        self.root.geometry("500x300+0+0")
+        self.root.geometry("256x256+0+0")
         self.root.update_idletasks()
 
     def start(self):
         self.running = True
+        self.force_refresh = True
         if not self.thread:
             self.thread = threading.Thread(target=self._run_loop, daemon=True)
             self.thread.start()
@@ -333,46 +673,73 @@ class PredictionOverlay:
 
     def _run_loop(self):
         import tkinter as tk
+        from PIL import Image, ImageTk
         
         self._init_overlay()
         
         while self.running:
             try:
-                if self.prediction_data:
-                    x_min, x_max = self.prediction_data["x_min"], self.prediction_data["x_max"]
-                    y_min, y_max = self.prediction_data["y_min"], self.prediction_data["y_max"]
-                    center_x = self.prediction_data["center_x"]
-                    center_y = self.prediction_data["center_y"]
-                    map_name = self.prediction_data.get("map_name", "")
-                    
-                    lines = [
-                        f"预测范围",
-                        f"假坐标: ({center_x}, {center_y})",
-                        f"地图: {map_name or '未知'}",
-                        f"X: {x_min}-{x_max}",
-                        f"Y: {y_min}-{y_max}"
-                    ]
-                    
+                if self.prediction_data or self.force_refresh:
                     self.canvas.delete("all")
-                    y_offset = 40
-                    for line in lines:
-                        self.canvas.create_text(
-                            20, y_offset,
-                            text=line,
-                            font=("Microsoft YaHei", 32, "bold"),
-                            fill="red",
-                            anchor="w"
-                        )
-                        y_offset += 45
                     
+                    if self.map_image and os.path.exists(self.map_image):
+                        try:
+                            img = Image.open(self.map_image)
+                            img = img.resize((256, 256), Image.LANCZOS)
+                            self.map_photo = ImageTk.PhotoImage(img)
+                            self.canvas.create_image(0, 0, anchor=tk.NW, image=self.map_photo)
+                        except:
+                            pass
+                    
+                    if self.prediction_data:
+                        pred_type = self.prediction_data.get("type", "ghost")
+                        
+                        center_x = self.prediction_data["center_x"]
+                        center_y = self.prediction_data["center_y"]
+                        dot_x = center_x
+                        dot_y = 255 - center_y
+                        
+                        if pred_type == "ghost":
+                            x_min = self.prediction_data["x_min"]
+                            x_max = self.prediction_data["x_max"]
+                            y_min = self.prediction_data["y_min"]
+                            y_max = self.prediction_data["y_max"]
+                            
+                            rect_x1 = x_min
+                            rect_y1 = 255 - y_max
+                            rect_x2 = x_max
+                            rect_y2 = 255 - y_min
+                            
+                            self.canvas.create_rectangle(
+                                rect_x1, rect_y1, rect_x2, rect_y2,
+                                outline="red",
+                                width=3,
+                            )
+                            
+                            self.canvas.create_oval(
+                                dot_x - 4, dot_y - 4, dot_x + 4, dot_y + 4,
+                                fill="blue",
+                                outline="white",
+                                width=2
+                            )
+                        else:
+                            self.canvas.create_oval(
+                                dot_x - 6, dot_y - 6, dot_x + 6, dot_y + 6,
+                                fill="#00ff00",
+                                outline="white",
+                                width=3
+                            )
+                        
+                        self.prediction_data = None
+                    
+                    self.force_refresh = False
                     self.root.update_idletasks()
-                    self.prediction_data = None
                 
                 self.root.update()
                 self.update_event.wait(0.5)
                 self.update_event.clear()
             except Exception as e:
-                print(f"Overlay error: {e}")
+                logger.error(f"Overlay error: {e}")
                 break
 
 
@@ -422,6 +789,7 @@ class GhostHunterPage(ft.Column):
         self.real_x = 0
         self.real_y = 0
         self.map_name = ""
+        self.current_type = None
         
         self._build_ui()
 
@@ -486,6 +854,26 @@ class GhostHunterPage(ft.Column):
             color=ft.Colors.WHITE,
             bgcolor=ft.Colors.GREEN,
             on_click=self._toggle_recognition
+        )
+
+        self.lock_window_btn = ft.Button(
+            "🔒 锁定梦幻西游",
+            icon=ft.Icons.LOCK_OUTLINE,
+            on_click=self._lock_game_window
+        )
+
+        self.window_status_text = ft.Text(
+            "未锁定 - 将截取全屏",
+            size=13,
+            color=ft.Colors.GREY,
+        )
+
+        self.unlock_btn = ft.IconButton(
+            icon=ft.Icons.LOCK_OPEN,
+            icon_size=20,
+            tooltip="解除窗口锁定",
+            visible=False,
+            on_click=self._unlock_window
         )
         
         self.predict_result = ft.Card(
@@ -597,6 +985,7 @@ class GhostHunterPage(ft.Column):
                 ),
             ),
             
+            self._build_window_lock_card(),
             self.map_section,
             self.predict_result,
             self.feedback_section,
@@ -606,12 +995,41 @@ class GhostHunterPage(ft.Column):
         self._update_stats()
 
     def _on_fake_coord_change(self, e):
-        self._calculate_prediction()
+        if self.current_type == "position":
+            coords = None
+            try:
+                x = int(self.fake_x_field.value) if self.fake_x_field.value else 0
+                y = int(self.fake_y_field.value) if self.fake_y_field.value else 0
+                if x > 0 and y > 0:
+                    coords = (x, y)
+            except:
+                pass
+            map_name = self.map_dropdown.value if self.map_dropdown.value != "未知" else ""
+            self._update_position_display(coords, map_name)
+        else:
+            self._calculate_prediction()
 
     def _on_map_change(self, e):
         self.map_name = e.control.value
         self._load_map_image()
-        self._calculate_prediction()
+        map_name = e.control.value if e.control.value != "未知" else ""
+        
+        if map_name:
+            map_path = get_map_image_path(map_name)
+            self.overlay.set_map_image(map_path)
+        
+        if self.current_type == "position":
+            coords = None
+            try:
+                x = int(self.fake_x_field.value) if self.fake_x_field.value else 0
+                y = int(self.fake_y_field.value) if self.fake_y_field.value else 0
+                if x > 0 and y > 0:
+                    coords = (x, y)
+            except:
+                pass
+            self._update_position_display(coords, map_name)
+        else:
+            self._calculate_prediction()
 
     def _on_real_coord_change(self, e):
         pass
@@ -620,12 +1038,37 @@ class GhostHunterPage(ft.Column):
         try:
             result = self.ocr.recognize_coordinates()
             if result:
-                self.fake_x_field.value = str(result[0])
-                self.fake_y_field.value = str(result[1])
-                self.fake_x_field.update()
-                self.fake_y_field.update()
-                self._calculate_prediction()
-                self._page.show_dialog(ft.SnackBar(content=ft.Text(f"识别成功: ({result[0]}, {result[1]})")))
+                coords = result.get("coords")
+                map_name = result.get("map_name")
+                recognize_type = result.get("type", "position")
+                
+                self.current_type = recognize_type
+                
+                if coords:
+                    self.fake_x_field.value = str(coords[0])
+                    self.fake_y_field.value = str(coords[1])
+                    self.fake_x_field.update()
+                    self.fake_y_field.update()
+                
+                if map_name:
+                    self.map_dropdown.value = map_name
+                    self.map_dropdown.update()
+                    self._load_map_image()
+                
+                if recognize_type == "ghost":
+                    self._calculate_prediction()
+                    if coords and map_name:
+                        self._page.show_dialog(ft.SnackBar(content=ft.Text(f"👻 识别到抓鬼任务: {map_name} ({coords[0]}, {coords[1]})")))
+                    elif coords:
+                        self._page.show_dialog(ft.SnackBar(content=ft.Text(f"👻 识别到抓鬼坐标: ({coords[0]}, {coords[1]})")))
+                else:
+                    self._update_position_display(coords, map_name)
+                    if coords and map_name:
+                        self._page.show_dialog(ft.SnackBar(content=ft.Text(f"📍 当前位置: {map_name} ({coords[0]}, {coords[1]})")))
+                    elif coords:
+                        self._page.show_dialog(ft.SnackBar(content=ft.Text(f"📍 当前坐标: ({coords[0]}, {coords[1]})")))
+                    elif map_name:
+                        self._page.show_dialog(ft.SnackBar(content=ft.Text(f"📍 当前地图: {map_name}")))
             else:
                 self._page.show_dialog(ft.SnackBar(content=ft.Text("未识别到坐标，请尝试手动输入")))
         except Exception as ex:
@@ -648,7 +1091,7 @@ class GhostHunterPage(ft.Column):
         self.recognize_thread.start()
         
         self.overlay.start()
-        self._page.show_dialog(ft.SnackBar(content=ft.Text("开始自动识别，预测范围将显示在屏幕左上角")))
+        self._page.show_dialog(ft.SnackBar(content=ft.Text("开始自动识别，地图与预测范围将显示在屏幕左上角")))
 
     def _stop_recognition(self):
         self.is_running = False
@@ -665,21 +1108,52 @@ class GhostHunterPage(ft.Column):
             try:
                 result = self.ocr.recognize_coordinates()
                 if result:
-                    self.fake_x_field.value = str(result[0])
-                    self.fake_y_field.value = str(result[1])
+                    coords = result.get("coords")
+                    map_name = result.get("map_name")
+                    recognize_type = result.get("type", "position")
                     
-                    self._page.run_task(self._update_ui_after_recognition)
+                    self.current_type = recognize_type
+                    
+                    if coords:
+                        self.fake_x_field.value = str(coords[0])
+                        self.fake_y_field.value = str(coords[1])
+                    
+                    if map_name:
+                        self.map_dropdown.value = map_name
+                    
+                    self._page.run_task(self._update_ui_after_recognition, recognize_type)
                     time.sleep(2)
                 else:
+                    self._page.run_task(self._update_map_only)
                     time.sleep(0.5)
             except:
                 time.sleep(1)
 
-    def _update_ui_after_recognition(self):
+    def _update_map_only(self):
+        try:
+            map_name = self.map_dropdown.value if self.map_dropdown.value != "未知" else ""
+            if map_name:
+                map_path = get_map_image_path(map_name)
+                self.overlay.set_map_image(map_path)
+            self.overlay.clear_prediction()
+        except RuntimeError:
+            pass
+
+    def _update_ui_after_recognition(self, recognize_type="position"):
         try:
             self.fake_x_field.update()
             self.fake_y_field.update()
-            self._calculate_prediction()
+            self.map_dropdown.update()
+            self._load_map_image()
+            
+            if recognize_type == "ghost":
+                self._calculate_prediction()
+            else:
+                coords = None
+                if self.fake_x_field.value and self.fake_y_field.value:
+                    coords = (int(self.fake_x_field.value), int(self.fake_y_field.value))
+                map_name = self.map_dropdown.value if self.map_dropdown.value != "未知" else ""
+                self._update_position_display(coords, map_name)
         except RuntimeError:
             pass
 
@@ -785,16 +1259,93 @@ class GhostHunterPage(ft.Column):
         rect_width = max(10, x_max - x_min)
         rect_height = max(10, y_max_screen - y_min_screen)
         
-        self.prediction_rect.left = x_min
-        self.prediction_rect.top = y_min_screen
-        self.prediction_rect.width = rect_width
-        self.prediction_rect.height = rect_height
-        self.prediction_rect.visible = True
+        pred_type = prediction.get("type", "ghost")
+        
+        if pred_type == "ghost":
+            self.prediction_rect.left = x_min
+            self.prediction_rect.top = y_min_screen
+            self.prediction_rect.width = rect_width
+            self.prediction_rect.height = rect_height
+            self.prediction_rect.border = ft.Border(
+                top=ft.BorderSide(3, ft.Colors.RED),
+                bottom=ft.BorderSide(3, ft.Colors.RED),
+                left=ft.BorderSide(3, ft.Colors.RED),
+                right=ft.BorderSide(3, ft.Colors.RED),
+            )
+            self.prediction_rect.bgcolor = ft.Colors.with_opacity(0.2, ft.Colors.YELLOW)
+            self.prediction_rect.visible = True
+        else:
+            center_x = prediction["center_x"]
+            center_y = prediction["center_y"]
+            dot_x = offset_x + center_x * scale_x
+            dot_y = offset_y + img_display_height - center_y * scale_y
+            
+            self.prediction_rect.left = max(offset_x, dot_x - 10)
+            self.prediction_rect.top = max(offset_y, dot_y - 10)
+            self.prediction_rect.width = 20
+            self.prediction_rect.height = 20
+            self.prediction_rect.border = ft.Border(
+                top=ft.BorderSide(3, ft.Colors.GREEN),
+                bottom=ft.BorderSide(3, ft.Colors.GREEN),
+                left=ft.BorderSide(3, ft.Colors.GREEN),
+                right=ft.BorderSide(3, ft.Colors.GREEN),
+            )
+            self.prediction_rect.bgcolor = ft.Colors.GREEN
+            self.prediction_rect.visible = True
         
         try:
             self.prediction_rect.update()
         except RuntimeError:
             pass
+
+    def _update_position_display(self, coords, map_name):
+        if coords:
+            x, y = coords
+            self.predict_result.content.content = ft.Column([
+                ft.Text("当前位置", size=16, weight=ft.FontWeight.BOLD),
+                ft.Divider(),
+                ft.Row([
+                    ft.Text("坐标:", size=14),
+                    ft.Text(f"({x}, {y})", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN),
+                ], spacing=10),
+                ft.Row([
+                    ft.Text("地图:", size=14),
+                    ft.Text(map_name or "未知", size=14, weight=ft.FontWeight.BOLD),
+                ], spacing=10),
+                ft.Text("📍 当前所在位置", size=14),
+            ], spacing=10)
+            
+            try:
+                self.predict_result.update()
+            except RuntimeError:
+                pass
+            
+            if map_name:
+                map_path = get_map_image_path(map_name)
+                self.overlay.set_map_image(map_path)
+                position_info = self.predictor.get_position_info(x, y, map_name)
+                self.overlay.draw_prediction(position_info)
+                self._update_map_prediction(position_info)
+        else:
+            if map_name:
+                self.predict_result.content.content = ft.Column([
+                    ft.Text("当前位置", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Divider(),
+                    ft.Row([
+                        ft.Text("地图:", size=14),
+                        ft.Text(map_name, size=14, weight=ft.FontWeight.BOLD),
+                    ], spacing=10),
+                    ft.Text("📍 当前地图", size=14),
+                ], spacing=10)
+                
+                try:
+                    self.predict_result.update()
+                except RuntimeError:
+                    pass
+                
+                map_path = get_map_image_path(map_name)
+                self.overlay.set_map_image(map_path)
+                self.overlay.clear_prediction()
 
     def _calculate_prediction(self):
         try:
@@ -815,6 +1366,7 @@ class GhostHunterPage(ft.Column):
                 return
             
             prediction = self.predictor.predict_range(x, y, map_name)
+            prediction["type"] = "ghost"
             
             self.predict_result.content.content = ft.Column([
                 ft.Text("预测结果", size=16, weight=ft.FontWeight.BOLD),
@@ -840,6 +1392,10 @@ class GhostHunterPage(ft.Column):
                 self.predict_result.update()
             except RuntimeError:
                 pass
+            
+            if map_name:
+                map_path = get_map_image_path(map_name)
+                self.overlay.set_map_image(map_path)
             
             self.overlay.draw_prediction(prediction)
             self._update_map_prediction(prediction)
@@ -969,8 +1525,70 @@ class GhostHunterPage(ft.Column):
         except RuntimeError:
             pass
 
+    def _build_window_lock_card(self):
+        """构建窗口锁定卡片"""
+        return ft.Card(
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text("🎯 窗口锁定", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Divider(),
+                    ft.Row([
+                        self.lock_window_btn,
+                        self.window_status_text,
+                        self.unlock_btn,
+                    ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ], spacing=10),
+                padding=15,
+            ),
+        )
+
+    def _lock_game_window(self, e):
+        """锁定梦幻西游窗口"""
+        try:
+            result = find_window_by_title("梦幻西游")
+            if result:
+                title, region = result
+                self.ocr.set_window_region(region, title)
+                self.window_status_text.value = f"已锁定: {title}"
+                self.window_status_text.color = ft.Colors.GREEN
+                self.lock_window_btn.visible = False
+                self.unlock_btn.visible = True
+                self._page.show_dialog(ft.SnackBar(content=ft.Text(f"已锁定窗口: {title}")))
+                logger.info(f"窗口锁定成功: {title}, 区域: {region}")
+            else:
+                self._page.show_dialog(ft.SnackBar(content=ft.Text("未找到梦幻西游窗口，请先启动游戏")))
+                logger.warning("未找到匹配窗口")
+        except Exception as ex:
+            self._page.show_dialog(ft.SnackBar(content=ft.Text(f"锁定失败: {str(ex)}")))
+            logger.error(f"窗口锁定异常: {ex}")
+        self._page.update()
+
+    def _unlock_window(self, e):
+        """解除窗口锁定"""
+        self.ocr.clear_window_region()
+        self.window_status_text.value = "未锁定 - 将截取全屏"
+        self.window_status_text.color = ft.Colors.GREY
+        self.lock_window_btn.visible = True
+        self.unlock_btn.visible = False
+        self._page.show_dialog(ft.SnackBar(content=ft.Text("OCR区域锁定已解除")))
+        logger.info("窗口锁定已解除")
+        self._page.update()
+
     def did_mount(self):
-        pass
+        """页面挂载后自动锁定梦幻西游窗口"""
+        try:
+            result = find_window_by_title("梦幻西游")
+            if result:
+                title, region = result
+                self.ocr.set_window_region(region, title)
+                self.window_status_text.value = f"已锁定: {title}"
+                self.window_status_text.color = ft.Colors.GREEN
+                self.lock_window_btn.visible = False
+                self.unlock_btn.visible = True
+                logger.info(f"自动锁定窗口成功: {title}, 区域: {region}")
+                self._page.update()
+        except Exception:
+            pass
 
     def will_unmount(self):
         self._stop_recognition()
