@@ -4,8 +4,8 @@ import io
 import base64
 import os
 from datetime import datetime, timedelta
-from accounting_db import AccountingDB, ACTIVITY_TYPES, format_number
-from platform_utils import get_app_data_dir
+from core.accounting_db import AccountingDB, ACTIVITY_TYPES, format_number
+from utils.platform_utils import get_app_data_dir
 
 
 class AccountingPage(ft.Column):
@@ -829,3 +829,7 @@ class AccountingPage(ft.Column):
             f.write(csv_content)
         
         self._page.show_dialog(ft.SnackBar(content=ft.Text(f"导出成功！文件已保存到 {filepath}")))
+
+    def cleanup(self):
+        """清理页面资源"""
+        pass

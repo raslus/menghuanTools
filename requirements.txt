@@ -4,4 +4,5 @@ opencv-python>=4.8.0
 numpy>=1.24.0
 mss>=9.0.0
 pyautogui>=0.9.54
-easyocr>=1.7.0
+rapidocr-onnxruntime>=1.2.0
+# easyocr>=1.7.0  # 已替换为RapidOCR，如需回退可取消注释

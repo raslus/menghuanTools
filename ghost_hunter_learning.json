@@ -1,0 +1,13 @@
+{
+  "普陀山": {
+    "count": 1,
+    "sum_offset_x": -34,
+    "sum_offset_y": -5,
+    "sum_sq_offset_x": 1156,
+    "sum_sq_offset_y": 25,
+    "avg_offset_x": -34.0,
+    "avg_offset_y": -5.0,
+    "std_dev_x": 5,
+    "std_dev_y": 5
+  }
+}

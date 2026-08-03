@@ -6,9 +6,9 @@ from pages.account_page import AccountPage
 from pages.accounting_page import AccountingPage
 from pages.growth_page import GrowthPage
 from pages.ghost_hunter_page import GhostHunterPage
-from data_manager import DataManager
-from platform_utils import get_app_data_dir
-from logger_setup import logger
+from core.data_manager import DataManager
+from utils.platform_utils import get_app_data_dir
+from utils.logger_setup import logger
 
 
 def main(page: ft.Page):
@@ -24,6 +24,7 @@ def main(page: ft.Page):
     data_manager = DataManager(data_file=accounts_file)
 
     content_container = ft.Container(expand=True, padding=10)
+    _current_page = None
 
     nav_rail = ft.NavigationRail(
         selected_index=0,
@@ -73,15 +74,19 @@ def main(page: ft.Page):
     )
 
     def switch_page(index: int):
+        nonlocal _current_page
+        if _current_page is not None and hasattr(_current_page, 'cleanup'):
+            _current_page.cleanup()
         nav_rail.selected_index = index
         if index == 0:
-            content_container.content = AccountPage(data_manager, page)
+            _current_page = AccountPage(data_manager, page)
         elif index == 1:
-            content_container.content = AccountingPage(data_manager, page)
+            _current_page = AccountingPage(data_manager, page)
         elif index == 2:
-            content_container.content = GrowthPage(data_manager, page)
+            _current_page = GrowthPage(data_manager, page)
         else:
-            content_container.content = GhostHunterPage(data_manager, page)
+            _current_page = GhostHunterPage(data_manager, page)
+        content_container.content = _current_page
         page.update()
 
     nav_rail.on_change = lambda e: switch_page(e.control.selected_index)

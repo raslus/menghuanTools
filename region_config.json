@@ -1,0 +1,26 @@
+{
+  "map_panel_region": [
+    30,
+    256,
+    159,
+    303
+  ],
+  "locked_window_region": [
+    4,
+    357,
+    1296,
+    1380
+  ],
+  "map_panel_offset": [
+    35,
+    78,
+    91,
+    47
+  ],
+  "ghost_task_offset": [
+    1117,
+    162,
+    170,
+    179
+  ]
+}

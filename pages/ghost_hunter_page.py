@@ -12,8 +12,14 @@ import sys
 import urllib.request
 import requests
 from PIL import Image as PILImage
-from platform_utils import get_app_data_dir
-from logger_setup import logger
+from utils.platform_utils import get_app_data_dir
+from utils.logger_setup import logger
+
+try:
+    from rapidocr_onnxruntime import RapidOCR
+    _rapidocr_available = True
+except ImportError:
+    _rapidocr_available = False
 
 try:
     import easyocr
@@ -113,6 +119,9 @@ def find_window_by_title(substring: str):
 
 
 class CoordinateOCR:
+    _ocr_engine = None
+    _engine_lock = threading.Lock()
+
     def __init__(self):
         self.screen_capture = mss.MSS()
         self.monitor = self.screen_capture.monitors[1]
@@ -154,15 +163,40 @@ class CoordinateOCR:
         return self.custom_region is not None
 
     def _init_ocr(self):
-        if self._ocr_initialized or not _easyocr_available:
+        if self._ocr_initialized:
             return
-        try:
-            logger.info("正在初始化EasyOCR (CPU模式)...")
-            self.ocr = easyocr.Reader(['ch_sim', 'en'], gpu=False, model_storage_directory=self._model_dir)
+
+        if CoordinateOCR._ocr_engine is not None:
+            self.ocr = CoordinateOCR._ocr_engine
             self._ocr_initialized = True
-            logger.info("EasyOCR初始化成功")
-        except Exception as e:
-            logger.error(f"EasyOCR初始化失败: {e}")
+            logger.debug("复用已初始化的OCR引擎")
+            return
+
+        with CoordinateOCR._engine_lock:
+            if CoordinateOCR._ocr_engine is not None:
+                self.ocr = CoordinateOCR._ocr_engine
+                self._ocr_initialized = True
+                return
+
+            if _rapidocr_available:
+                try:
+                    logger.info("正在初始化RapidOCR...")
+                    CoordinateOCR._ocr_engine = RapidOCR()
+                    self.ocr = CoordinateOCR._ocr_engine
+                    self._ocr_initialized = True
+                    logger.info("RapidOCR初始化成功")
+                except Exception as e:
+                    logger.error(f"RapidOCR初始化失败: {e}")
+
+            if not self._ocr_initialized and _easyocr_available:
+                try:
+                    logger.info("正在初始化EasyOCR (CPU模式)...")
+                    CoordinateOCR._ocr_engine = easyocr.Reader(['ch_sim', 'en'], gpu=False, model_storage_directory=self._model_dir)
+                    self.ocr = CoordinateOCR._ocr_engine
+                    self._ocr_initialized = True
+                    logger.info("EasyOCR初始化成功")
+                except Exception as e:
+                    logger.error(f"EasyOCR初始化失败: {e}")
 
     def capture_screen_region(self, region=None):
         if region:
@@ -177,25 +211,105 @@ class CoordinateOCR:
 
         screenshot = self.screen_capture.grab(monitor)
         img = np.array(screenshot)
+        
+        if img.ndim == 3 and img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        
         return img
 
     def preprocess_image(self, img):
-        scale_factor = 2
+        scale_factor = 3
         
         scaled = cv2.resize(img, None, fx=scale_factor, fy=scale_factor, 
                            interpolation=cv2.INTER_CUBIC)
         
-        gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(scaled, (3, 3), 0)
         
-        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
         
-        kernel = np.ones((2, 2), np.uint8)
-        cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
+        enhanced_gray = clahe.apply(gray)
         
-        enhanced = cv2.equalizeHist(cleaned)
+        kernel_sharpen = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+        sharpened = cv2.filter2D(enhanced_gray, -1, kernel_sharpen)
         
-        return enhanced
+        adaptive1 = cv2.adaptiveThreshold(sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                         cv2.THRESH_BINARY, 15, 3)
+        adaptive2 = cv2.adaptiveThreshold(sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                         cv2.THRESH_BINARY_INV, 21, 4)
+        
+        _, otsu = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        edges = cv2.Canny(sharpened, 30, 100, apertureSize=3)
+        edge_enhanced = cv2.bitwise_or(adaptive1, edges)
+        
+        gray_inverted = cv2.bitwise_not(gray)
+        _, dark_text = cv2.threshold(gray_inverted, 150, 255, cv2.THRESH_BINARY)
+        
+        hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+        
+        lower_red1 = np.array([0, 60, 60])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([170, 60, 60])
+        upper_red2 = np.array([180, 255, 255])
+        mask_red1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        mask_red2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        hsv_red = cv2.bitwise_or(mask_red1, mask_red2)
+        
+        lower_yellow = np.array([20, 100, 100])
+        upper_yellow = np.array([40, 255, 255])
+        hsv_yellow = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        
+        lower_green = np.array([40, 40, 40])
+        upper_green = np.array([90, 255, 255])
+        hsv_green = cv2.inRange(hsv, lower_green, upper_green)
+        
+        lower_orange = np.array([10, 100, 100])
+        upper_orange = np.array([20, 255, 255])
+        hsv_orange = cv2.inRange(hsv, lower_orange, upper_orange)
+        
+        red_channel = blurred[:, :, 2].astype(np.int16)
+        green_channel = blurred[:, :, 1].astype(np.int16)
+        blue_channel = blurred[:, :, 0].astype(np.int16)
+        
+        red_diff = cv2.absdiff(red_channel, green_channel) + cv2.absdiff(red_channel, blue_channel)
+        red_mask = red_diff > 40
+        rgb_red = np.where(red_mask, 255, 0).astype(np.uint8)
+        
+        green_diff = cv2.absdiff(green_channel, red_channel) + cv2.absdiff(green_channel, blue_channel)
+        green_mask = green_diff > 40
+        rgb_green = np.where(green_mask, 255, 0).astype(np.uint8)
+        
+        blue_diff = cv2.absdiff(blue_channel, red_channel) + cv2.absdiff(blue_channel, green_channel)
+        blue_mask = blue_diff > 40
+        rgb_blue = np.where(blue_mask, 255, 0).astype(np.uint8)
+        
+        yellow_rgb_mask = (red_channel > 80) & (green_channel > 80) & (blue_channel < 60)
+        yellow_rgb = np.where(yellow_rgb_mask, 255, 0).astype(np.uint8)
+        
+        color_text = cv2.bitwise_or(hsv_red, rgb_red)
+        color_text = cv2.bitwise_or(color_text, hsv_yellow)
+        color_text = cv2.bitwise_or(color_text, yellow_rgb)
+        color_text = cv2.bitwise_or(color_text, hsv_green)
+        color_text = cv2.bitwise_or(color_text, rgb_green)
+        color_text = cv2.bitwise_or(color_text, hsv_orange)
+        color_text = cv2.bitwise_or(color_text, rgb_blue)
+        
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        color_text = cv2.morphologyEx(color_text, cv2.MORPH_CLOSE, kernel, iterations=1)
+        
+        combined = cv2.bitwise_or(edge_enhanced, otsu)
+        combined = cv2.bitwise_or(combined, adaptive2)
+        combined = cv2.bitwise_or(combined, dark_text)
+        combined = cv2.bitwise_or(combined, color_text)
+        
+        kernel2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        cleaned = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel2, iterations=1)
+        cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel2, iterations=1)
+        
+        _, final = cv2.threshold(cleaned, 128, 255, cv2.THRESH_BINARY)
+        
+        return final
 
     def get_screen_size(self):
         primary_monitor = self.screen_capture.monitors[1]
@@ -205,7 +319,7 @@ class CoordinateOCR:
         "建邺城", "东海湾", "江南野外", "长安城", "大唐国境", "大唐境外",
         "长寿村", "长寿郊外", "傲来国", "花果山", "月宫", "大唐官府",
         "方寸山", "化生寺", "女儿村", "魔王寨", "狮陀岭", "地府", "盘丝洞",
-        "龙宫", "天宫", "五庄观", "普陀山", "境外"
+        "龙宫", "天宫", "五庄观", "普陀山", "境外", "西梁女国", "无名城"
     ]
 
     GHOST_KEYWORDS = ["鬼", "钟馗", "捉鬼", "抓鬼", "任务", "领取"]
@@ -216,46 +330,6 @@ class CoordinateOCR:
         "Z": "2", "z": "2",
         "S": "5", "s": "5",
         "B": "8",
-        "已": "已", "巳": "已",
-        "东": "东", "布": "东", "冻": "东", "栋": "东",
-        "海": "海", "悔": "海", "晦": "海", "渖": "海", "沈": "海",
-        "湾": "湾", "弯": "湾", "筲": "湾", "梢": "湾", "宵": "湾",
-        "长": "长", "怅": "长", "伥": "长",
-        "寿": "寿", "受": "寿", "授": "寿",
-        "村": "村", "材": "村", "寸": "村",
-        "城": "城", "成": "城", "诚": "城",
-        "江": "江", "扛": "江",
-        "南": "南", "喃": "南", "楠": "南",
-        "野": "野", "也": "野", "冶": "野",
-        "外": "外", "处": "外",
-        "国": "国", "囯": "国", "圀": "国",
-        "境": "境", "镜": "境", "竟": "境",
-        "府": "府", "俯": "府", "腑": "府",
-        "山": "山", "出": "山", "仙": "山",
-        "观": "观", "官": "观", "关": "观",
-        "陀": "陀", "驼": "陀", "鸵": "陀",
-        "普": "普", "谱": "普", "葡": "普",
-        "洞": "洞", "同": "洞", "侗": "洞",
-        "丝": "丝", "思": "丝", "私": "丝",
-        "岭": "岭", "领": "岭", "玲": "岭",
-        "寨": "寨", "塞": "寨", "赛": "寨",
-        "王": "王", "主": "王", "玉": "王",
-        "寺": "寺", "侍": "寺", "诗": "寺",
-        "门": "门", "们": "门",
-        "宫": "宫", "官": "宫", "弓": "宫",
-        "龙": "龙", "拢": "龙",
-        "天": "天", "夫": "天", "夭": "天",
-        "傲": "傲", "敖": "傲", "遨": "傲",
-        "来": "来", "莱": "来", "涞": "来",
-        "花": "花", "华": "花", "化": "花",
-        "果": "果", "裹": "果", "过": "果",
-        "女": "女", "汝": "女", "如": "女",
-        "儿": "儿", "而": "儿", "尔": "儿",
-        "方": "方", "放": "方", "芳": "方",
-        "寸": "寸", "村": "寸", "忖": "寸",
-        "唐": "唐", "塘": "唐", "糖": "唐",
-        "官": "官", "管": "官", "观": "官",
-        "月": "月", "日": "月", "目": "月",
     }
 
     def _correct_text(self, text):
@@ -291,19 +365,62 @@ class CoordinateOCR:
         if not text:
             return None
         
+        cleaned = re.sub(r'[\[\]\(\)\d,.，。、\s]', '', text)
+        
+        candidates = []
+        for i in range(len(cleaned)):
+            for j in range(i + 2, min(i + 6, len(cleaned) + 1)):
+                candidates.append(cleaned[i:j])
+        
         best_match = None
         min_distance = float('inf')
         
         for map_name in self.MAP_NAMES:
-            distance = self._levenshtein_distance(text, map_name)
-            similarity = 1 - distance / max(len(text), len(map_name))
-            
-            if distance < min_distance:
-                min_distance = distance
-                best_match = map_name
+            for candidate in candidates:
+                distance = self._levenshtein_distance(candidate, map_name)
+                similarity = 1 - distance / max(len(candidate), len(map_name))
+                
+                if distance < min_distance and similarity > 0.5:
+                    min_distance = distance
+                    best_match = map_name
         
-        if min_distance <= 2:
+        if min_distance <= 2 and best_match:
+            logger.debug(f"模糊匹配地图名: '{text}' -> '{best_match}'")
             return best_match
+        return None
+
+    def _split_coordinate(self, num_str):
+        """智能分割合并的坐标数字（如7396 -> (73, 96)）"""
+        length = len(num_str)
+        
+        if length == 4:
+            x = int(num_str[:2])
+            y = int(num_str[2:])
+            if x <= 255 and y <= 255:
+                return (x, y)
+        
+        if length == 3:
+            x = int(num_str[:1])
+            y = int(num_str[1:])
+            if x <= 255 and y <= 255:
+                return (x, y)
+            
+            x = int(num_str[:2])
+            y = int(num_str[2:])
+            if x <= 255 and y <= 255:
+                return (x, y)
+        
+        if length == 5:
+            x = int(num_str[:2])
+            y = int(num_str[2:])
+            if x <= 255 and y <= 255:
+                return (x, y)
+            
+            x = int(num_str[:3])
+            y = int(num_str[3:])
+            if x <= 255 and y <= 255:
+                return (x, y)
+        
         return None
 
     def _is_ghost_hunting_text(self, text):
@@ -313,8 +430,8 @@ class CoordinateOCR:
         return False
 
     def recognize_coordinates(self, search_region=None):
-        if not _easyocr_available:
-            logger.warning("EasyOCR未安装，无法进行文字识别")
+        if not _rapidocr_available and not _easyocr_available:
+            logger.warning("RapidOCR和EasyOCR均未安装，无法进行文字识别")
             return None
     
         self._init_ocr()
@@ -322,17 +439,77 @@ class CoordinateOCR:
             logger.error("OCR初始化失败")
             return None
     
+        def _merge_texts_by_coords(raw_results):
+            if not raw_results:
+                return []
+            
+            sorted_results = sorted(raw_results, key=lambda x: (x[0][0][1], x[0][0][0]))
+            
+            if len(sorted_results) == 1:
+                return [sorted_results[0][1]]
+            
+            y_centers = []
+            for item in sorted_results:
+                bbox = item[0]
+                center_y = (bbox[0][1] + bbox[2][1]) / 2
+                y_centers.append(center_y)
+            
+            gaps = []
+            for i in range(1, len(y_centers)):
+                gaps.append(y_centers[i] - y_centers[i-1])
+            
+            if len(gaps) == 1:
+                all_texts = [item[1] for item in sorted_results]
+                return ["".join(all_texts)]
+            
+            avg_gap = sum(gaps) / len(gaps)
+            std_gap = (sum((g - avg_gap)**2 for g in gaps) / len(gaps)) ** 0.5
+            
+            group_indices = [0]
+            for i in range(len(gaps)):
+                if abs(gaps[i] - avg_gap) > std_gap * 1.5:
+                    group_indices.append(i + 1)
+            
+            group_indices.append(len(sorted_results))
+            
+            merged_lines = []
+            for i in range(len(group_indices) - 1):
+                start = group_indices[i]
+                end = group_indices[i + 1]
+                group_items = sorted_results[start:end]
+                group_items.sort(key=lambda x: x[0][0][0])
+                merged_text = "".join([item[1] for item in group_items])
+                merged_lines.append(merged_text)
+            
+            return merged_lines
+        
         def ocr_image(img, region_desc):
             texts = []
             try:
-                result = self.ocr.readtext(img)
-                if result and len(result) > 0:
-                    for line in result:
-                        if len(line) > 1:
-                            texts.append(line[1])
+                if _rapidocr_available and isinstance(self.ocr, RapidOCR):
+                    logger.debug(f"{region_desc} 调用RapidOCR识别...")
+                    
+                    if img.ndim == 3 and img.shape[2] == 4:
+                        img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+                    elif img.ndim == 3 and img.shape[2] == 3:
+                        pass
+                    else:
+                        logger.warning(f"{region_desc} 图像格式异常: {img.shape}")
+                    
+                    result, _ = self.ocr(img)
+                    logger.debug(f"{region_desc} RapidOCR原始结果: {result}")
+                    if result and len(result) > 0:
+                        texts = _merge_texts_by_coords(result)
+                    logger.debug(f"{region_desc} OCR识别结果(合并后): {texts}")
+                else:
+                    result = self.ocr.readtext(img)
+                    if result and len(result) > 0:
+                        for line in result:
+                            if len(line) > 1:
+                                texts.append(line[1])
                     logger.debug(f"{region_desc} OCR识别结果: {texts}")
             except Exception as e:
-                logger.debug(f"{region_desc} OCR识别异常: {e}")
+                logger.error(f"{region_desc} OCR识别异常: {e}")
             return texts
         
         try:
@@ -413,9 +590,16 @@ class CoordinateOCR:
                 pattern2 = r'(\d{1,3})\s+(\d{1,3})'
                 match = re.search(pattern2, all_text)
             
-            if match:
-                coords = (int(match.group(1)), int(match.group(2)))
-                
+            coords = None
+            
+            if not match and map_name:
+                bracket_pattern = r'\[(\d{3,5})\]'
+                bracket_match = re.search(bracket_pattern, all_text)
+                if bracket_match:
+                    num_str = bracket_match.group(1)
+                    coords = self._split_coordinate(num_str)
+            
+            if coords:
                 if is_ghost_hunting:
                     result_data = {
                         "type": "ghost",
@@ -1164,6 +1348,7 @@ class GhostHunterPage(ft.Column):
 
     def _start_recognition(self):
         self.is_running = True
+        self._recognition_fail_count = 0
         self.toggle_btn.text = "⏹ 停止识别"
         self.toggle_btn.icon = ft.Icons.STOP
         self.toggle_btn.bgcolor = ft.Colors.RED
@@ -1195,6 +1380,7 @@ class GhostHunterPage(ft.Column):
                     recognize_type = result.get("type", "position")
                     
                     self.current_type = recognize_type
+                    self._recognition_fail_count = 0
                     
                     if coords:
                         self.fake_x_field.value = str(coords[0])
@@ -1206,10 +1392,42 @@ class GhostHunterPage(ft.Column):
                     self._page.run_task(self._update_ui_after_recognition, recognize_type)
                     time.sleep(2)
                 else:
+                    self._recognition_fail_count += 1
+                    
+                    if self._recognition_fail_count >= 5:
+                        logger.info(f"连续{self._recognition_fail_count}次识别失败，尝试重新获取窗口位置")
+                        self._reacquire_window_position()
+                        self._recognition_fail_count = 0
+                        time.sleep(1)
+                        continue
+                    
                     self._page.run_task(self._update_map_only)
                     time.sleep(0.5)
             except:
                 time.sleep(1)
+
+    def _reacquire_window_position(self):
+        """重新获取梦幻西游窗口位置并更新识别区域"""
+        try:
+            result = find_window_by_title("梦幻西游")
+            if result:
+                title, new_region = result
+                old_region = self.ocr.custom_region
+                
+                if old_region and new_region != old_region:
+                    self.ocr.set_window_region(new_region, title)
+                    logger.info(f"窗口位置已更新: {old_region} -> {new_region}")
+                    
+                    self._load_region_config()
+                    
+                    self._page.run_task(lambda: self._page.show_dialog(
+                        ft.SnackBar(content=ft.Text(f"📍 窗口位置已更新: {new_region}"))))
+                else:
+                    logger.debug("窗口位置未变化")
+            else:
+                logger.warning("重新获取窗口位置失败，未找到梦幻西游窗口")
+        except Exception as e:
+            logger.error(f"重新获取窗口位置异常: {e}")
 
     def _update_map_only(self):
         try:
@@ -1629,7 +1847,7 @@ class GhostHunterPage(ft.Column):
         )
 
     def _lock_game_window(self, e):
-        """锁定梦幻西游窗口"""
+        """锁定梦幻西游窗口并加载保存的区域配置"""
         try:
             result = find_window_by_title("梦幻西游")
             if result:
@@ -1643,6 +1861,9 @@ class GhostHunterPage(ft.Column):
                 self.select_ghost_task_btn.disabled = False
                 self._page.show_dialog(ft.SnackBar(content=ft.Text(f"已锁定窗口: {title}")))
                 logger.info(f"窗口锁定成功: {title}, 区域: {region}")
+                
+                self._load_region_config()
+                
             else:
                 self._page.show_dialog(ft.SnackBar(content=ft.Text("未找到梦幻西游窗口，请先启动游戏")))
                 logger.warning("未找到匹配窗口")
@@ -1777,7 +1998,7 @@ class GhostHunterPage(ft.Column):
             logger.info(f"区域选择完成: {region_name} - {selected_region}")
 
     def _save_map_panel_region(self, region):
-        """保存地图面板区域配置"""
+        """保存地图面板区域配置（相对偏移量）"""
         config_dir = get_app_data_dir()
         config_path = os.path.join(config_dir, "region_config.json")
         
@@ -1789,7 +2010,18 @@ class GhostHunterPage(ft.Column):
             except:
                 pass
         
-        config["map_panel_region"] = region
+        if self.ocr.custom_region:
+            window_left, window_top, _, _ = self.ocr.custom_region
+            offset_x = region[0] - window_left
+            offset_y = region[1] - window_top
+            width = region[2] - region[0]
+            height = region[3] - region[1]
+            
+            config["map_panel_offset"] = (offset_x, offset_y, width, height)
+            logger.info(f"地图面板相对偏移量已保存: ({offset_x}, {offset_y}, {width}, {height})")
+        else:
+            config["map_panel_region"] = region
+        
         config["locked_window_region"] = self.ocr.custom_region
         
         try:
@@ -1802,7 +2034,7 @@ class GhostHunterPage(ft.Column):
         logger.info(f"地图面板区域已保存: {region}")
 
     def _save_ghost_task_region(self, region):
-        """保存抓鬼任务区域配置"""
+        """保存抓鬼任务区域配置（相对偏移量）"""
         config_dir = get_app_data_dir()
         config_path = os.path.join(config_dir, "region_config.json")
         
@@ -1814,7 +2046,18 @@ class GhostHunterPage(ft.Column):
             except:
                 pass
         
-        config["ghost_task_region"] = region
+        if self.ocr.custom_region:
+            window_left, window_top, _, _ = self.ocr.custom_region
+            offset_x = region[0] - window_left
+            offset_y = region[1] - window_top
+            width = region[2] - region[0]
+            height = region[3] - region[1]
+            
+            config["ghost_task_offset"] = (offset_x, offset_y, width, height)
+            logger.info(f"抓鬼任务相对偏移量已保存: ({offset_x}, {offset_y}, {width}, {height})")
+        else:
+            config["ghost_task_region"] = region
+        
         config["locked_window_region"] = self.ocr.custom_region
         
         try:
@@ -1827,7 +2070,7 @@ class GhostHunterPage(ft.Column):
         logger.info(f"抓鬼任务区域已保存: {region}")
 
     def did_mount(self):
-        """页面挂载后自动锁定梦幻西游窗口"""
+        """页面挂载后自动锁定梦幻西游窗口并加载保存的区域配置"""
         try:
             result = find_window_by_title("梦幻西游")
             if result:
@@ -1840,9 +2083,72 @@ class GhostHunterPage(ft.Column):
                 self.select_map_panel_btn.disabled = False
                 self.select_ghost_task_btn.disabled = False
                 logger.info(f"自动锁定窗口成功: {title}, 区域: {region}")
+                
+                self._load_region_config()
+                
                 self._page.update()
         except Exception:
             pass
 
+    def _load_region_config(self):
+        """加载保存的区域配置并根据当前窗口位置计算实际区域"""
+        config_dir = get_app_data_dir()
+        config_path = os.path.join(config_dir, "region_config.json")
+        
+        if not os.path.exists(config_path):
+            return
+        
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            
+            window_left, window_top, _, _ = self.ocr.custom_region
+            
+            if "map_panel_offset" in config:
+                offset_x, offset_y, width, height = config["map_panel_offset"]
+                region = (
+                    window_left + offset_x,
+                    window_top + offset_y,
+                    window_left + offset_x + width,
+                    window_top + offset_y + height
+                )
+                self.ocr.map_panel_region = region
+                logger.info(f"地图面板区域已从配置加载: {region}")
+            elif "map_panel_region" in config:
+                self.ocr.map_panel_region = config["map_panel_region"]
+                logger.info(f"地图面板区域已从配置加载(绝对坐标): {self.ocr.map_panel_region}")
+            
+            if "ghost_task_offset" in config:
+                offset_x, offset_y, width, height = config["ghost_task_offset"]
+                region = (
+                    window_left + offset_x,
+                    window_top + offset_y,
+                    window_left + offset_x + width,
+                    window_top + offset_y + height
+                )
+                self.ocr.ghost_task_region = region
+                logger.info(f"抓鬼任务区域已从配置加载: {region}")
+            elif "ghost_task_region" in config:
+                self.ocr.ghost_task_region = config["ghost_task_region"]
+                logger.info(f"抓鬼任务区域已从配置加载(绝对坐标): {self.ocr.ghost_task_region}")
+                
+        except Exception as e:
+            logger.error(f"加载区域配置失败: {e}")
+
     def will_unmount(self):
-        self._stop_recognition()
+        self.cleanup()
+
+    def cleanup(self):
+        """清理页面资源：停止识别线程、关闭悬浮窗、释放截图资源"""
+        if self.is_running:
+            self.is_running = False
+            if self.toggle_btn:
+                self.toggle_btn.text = "▶ 开启识别"
+                self.toggle_btn.icon = ft.Icons.PLAY_ARROW
+                self.toggle_btn.bgcolor = ft.Colors.GREEN
+        self.overlay.stop()
+        try:
+            self.ocr.screen_capture.close()
+        except:
+            pass
+        logger.debug("GhostHunterPage资源已清理")

@@ -1,7 +1,7 @@
 import flet as ft
 import os
-from growth_db import GrowthDB
-from platform_utils import get_app_data_dir
+from core.growth_db import GrowthDB
+from utils.platform_utils import get_app_data_dir
 
 
 class GrowthPage(ft.Column):
@@ -489,3 +489,7 @@ class GrowthPage(ft.Column):
             ],
         )
         self._page.show_dialog(dialog)
+
+    def cleanup(self):
+        """清理页面资源"""
+        pass
