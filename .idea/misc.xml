@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="menghuan_tools" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="menghuanTools" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="menghuan_tools" project-jdk-type="Python SDK" />
 </project>

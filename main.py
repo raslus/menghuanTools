@@ -6,6 +6,7 @@ from pages.account_page import AccountPage
 from pages.accounting_page import AccountingPage
 from pages.growth_page import GrowthPage
 from pages.ghost_hunter_page import GhostHunterPage
+from pages.quiz_page import QuizAssistantPage
 from core.data_manager import DataManager
 from utils.platform_utils import get_app_data_dir
 from utils.logger_setup import logger
@@ -63,6 +64,11 @@ def main(page: ft.Page):
                 selected_icon=ft.Icons.STAR,
                 label="抓鬼辅助",
             ),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.HELP_OUTLINE,
+                selected_icon=ft.Icons.HELP,
+                label="答题器",
+            ),
         ],
     )
 
@@ -105,8 +111,10 @@ def main(page: ft.Page):
             _current_page = AccountingPage(data_manager, page)
         elif index == 2:
             _current_page = GrowthPage(data_manager, page)
-        else:
+        elif index == 3:
             _current_page = GhostHunterPage(data_manager, page)
+        else:
+            _current_page = QuizAssistantPage(data_manager, page)
         content_container.content = _current_page
         page.update()
 

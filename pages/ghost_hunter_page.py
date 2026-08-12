@@ -14,6 +14,7 @@ import requests
 from PIL import Image as PILImage
 from utils.platform_utils import get_app_data_dir
 from utils.logger_setup import logger
+from utils.ocr_engine import get_ocr_engine, find_window_by_title, POINT
 
 try:
     from rapidocr_onnxruntime import RapidOCR
@@ -28,99 +29,9 @@ except ImportError:
     _easyocr_available = False
 
 import ctypes
-from ctypes import wintypes
-
-
-class POINT(ctypes.Structure):
-    _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
-
-
-def find_window_by_title(substring: str):
-    """查找标题包含指定文本的第一个可见窗口
-
-    Args:
-        substring: 窗口标题包含的文本（如"梦幻西游"）
-
-    Returns:
-        tuple: (window_title, (left, top, right, bottom)) 或 None
-    """
-    user32 = ctypes.windll.user32
-    candidates = []
-
-    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    def enum_callback(hwnd, lparam):
-        if user32.IsWindowVisible(hwnd):
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length > 0:
-                buffer = ctypes.create_unicode_buffer(length + 1)
-                user32.GetWindowTextW(hwnd, buffer, length + 1)
-                title = buffer.value
-                if substring in title:
-                    if "聊天窗口" in title or "聊天框" in title:
-                        return True
-                    
-                    window_rect = wintypes.RECT()
-                    user32.GetWindowRect(hwnd, ctypes.byref(window_rect))
-                    
-                    client_rect = wintypes.RECT()
-                    user32.GetClientRect(hwnd, ctypes.byref(client_rect))
-                    
-                    client_left_top = POINT(0, 0)
-                    user32.ClientToScreen(hwnd, ctypes.byref(client_left_top))
-                    
-                    client_right_bottom = POINT(client_rect.right, client_rect.bottom)
-                    user32.ClientToScreen(hwnd, ctypes.byref(client_right_bottom))
-                    
-                    left = client_left_top.x
-                    top = client_left_top.y
-                    right = client_right_bottom.x
-                    bottom = client_right_bottom.y
-                    
-                    if right - left < 100 or bottom - top < 100:
-                        left = window_rect.left
-                        top = window_rect.top
-                        right = window_rect.right
-                        bottom = window_rect.bottom
-                    
-                    width = right - left
-                    height = bottom - top
-                    
-                    is_main = False
-                    score = 0
-                    
-                    if title.startswith("梦幻西游"):
-                        score += 10
-                    if "Online" in title or "online" in title:
-                        score += 5
-                    if width >= 800 and height >= 600:
-                        score += 10
-                        is_main = True
-                    if "聊天" not in title and "聊天框" not in title:
-                        score += 5
-                    
-                    candidates.append({
-                        "title": title,
-                        "rect": (left, top, right, bottom),
-                        "score": score,
-                        "is_main": is_main,
-                    })
-        return True
-
-    user32.EnumWindows(enum_callback, 0)
-    
-    if not candidates:
-        return None
-    
-    candidates.sort(key=lambda x: x["score"], reverse=True)
-    
-    best = candidates[0]
-    logger.debug(f"找到{len(candidates)}个匹配窗口，最佳匹配: {best['title']} (分数: {best['score']})")
-    return (best["title"], best["rect"])
 
 
 class CoordinateOCR:
-    _ocr_engine = None
-    _engine_lock = threading.Lock()
 
     def __init__(self):
         self.screen_capture = mss.MSS()
@@ -166,37 +77,14 @@ class CoordinateOCR:
         if self._ocr_initialized:
             return
 
-        if CoordinateOCR._ocr_engine is not None:
-            self.ocr = CoordinateOCR._ocr_engine
+        # 复用 utils.ocr_engine 的全局单例（跨页面共享，避免重复加载模型）
+        engine = get_ocr_engine()
+        if engine is not None:
+            self.ocr = engine
             self._ocr_initialized = True
-            logger.debug("复用已初始化的OCR引擎")
-            return
-
-        with CoordinateOCR._engine_lock:
-            if CoordinateOCR._ocr_engine is not None:
-                self.ocr = CoordinateOCR._ocr_engine
-                self._ocr_initialized = True
-                return
-
-            if _rapidocr_available:
-                try:
-                    logger.info("正在初始化RapidOCR...")
-                    CoordinateOCR._ocr_engine = RapidOCR()
-                    self.ocr = CoordinateOCR._ocr_engine
-                    self._ocr_initialized = True
-                    logger.info("RapidOCR初始化成功")
-                except Exception as e:
-                    logger.error(f"RapidOCR初始化失败: {e}")
-
-            if not self._ocr_initialized and _easyocr_available:
-                try:
-                    logger.info("正在初始化EasyOCR (CPU模式)...")
-                    CoordinateOCR._ocr_engine = easyocr.Reader(['ch_sim', 'en'], gpu=False, model_storage_directory=self._model_dir)
-                    self.ocr = CoordinateOCR._ocr_engine
-                    self._ocr_initialized = True
-                    logger.info("EasyOCR初始化成功")
-                except Exception as e:
-                    logger.error(f"EasyOCR初始化失败: {e}")
+            logger.debug("复用共享 OCR 引擎")
+        else:
+            logger.error("OCR 引擎初始化失败（RapidOCR/EasyOCR 均不可用）")
 
     def capture_screen_region(self, region=None):
         if region:
