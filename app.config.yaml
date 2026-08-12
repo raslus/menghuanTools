@@ -1,38 +1,27 @@
 app:
-  name: "账号管理系统"
-  description: "账号管理和记账本应用"
+  name: "梦幻工具箱"
+  description: "梦幻西游账号、收益、养成与抓鬼辅助工具箱"
   version: "1.0.0"
   author: "Developer"
   
   # 桌面端配置
   desktop:
-    window_size: "900x600"
+    window_size: "1200x800"
+    min_window_size: "1000x700"
     resizable: true
   
-  # 移动端配置
-  mobile:
-    android:
-      package: "com.example.menghuan_tools"
-      activity_name: "MainActivity"
-      permissions:
-        - INTERNET
-        - READ_EXTERNAL_STORAGE
-        - WRITE_EXTERNAL_STORAGE
-        - ACCESS_MEDIA_LOCATION
-      min_sdk: 24
-      target_sdk: 34
-      app_icon: "assets/icon.png"
-      launcher_name: "账号管理"
-    
-    ios:
-      bundle_id: "com.example.menghuan_tools"
-      app_icon: "assets/icon.png"
-
   # 依赖配置
   dependencies:
-    - flet>=0.86.3
+    - flet==0.86.2
     - cryptography>=3.4.8
     - matplotlib>=3.7.0
+    - mss>=9.0.0
+    - numpy>=1.24.0
+    - opencv-python>=4.8.0
+    - Pillow>=9.5.0
+    - pyautogui>=0.9.54
+    - rapidocr-onnxruntime>=1.2.0
+    - requests>=2.28.0
 
   # 资源文件
   assets:

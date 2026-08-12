@@ -20,6 +20,7 @@ class GrowthPage(ft.Column):
         
         self.selected_role = None
         self.growth_data = None
+        self.workspace_tab_index = 0
         
         self.cur_fields = {}
         self.tar_fields = {}
@@ -52,8 +53,20 @@ class GrowthPage(ft.Column):
         self.content_container = ft.Column(expand=True, spacing=10)
         
         self.controls = [
-            ft.Row([self.role_dropdown], alignment=ft.MainAxisAlignment.START),
-            ft.Divider(),
+            ft.Column([
+                ft.Text("养成规划", size=26, weight=ft.FontWeight.BOLD),
+                ft.Text("对比当前与目标属性，明确下一步优先提升的方向。", color=ft.Colors.ON_SURFACE_VARIANT),
+            ], spacing=2),
+            ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.PERSON_SEARCH, color=ft.Colors.PRIMARY),
+                    self.role_dropdown,
+                    ft.Text("角色来自账号管理", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=12,
+                bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+                border_radius=12,
+            ),
             ft.Container(
                 content=ft.Stack([self.empty_state, self.content_container]),
                 expand=True,
@@ -124,18 +137,41 @@ class GrowthPage(ft.Column):
         self.content_container.controls.clear()
         
         self.content_container.controls.append(
-            ft.Text(f"📊 {self.selected_role} 的养成规划", size=20, weight=ft.FontWeight.BOLD)
+            ft.Text(f"{self.selected_role} 的成长目标", size=20, weight=ft.FontWeight.BOLD)
         )
         
-        is_mobile = self._page.width < 600
-        
-        if is_mobile:
-            self.content_container.controls.append(self._build_attributes_panel_mobile())
-        else:
-            self.content_container.controls.append(self._build_attributes_panel_desktop())
-        
-        self.content_container.controls.append(self._build_progress_section())
-        self.content_container.controls.append(self._build_equipment_section())
+        attributes_view = ft.Column(
+            [self._build_attributes_panel_desktop()],
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+        )
+        planning_view = ft.Column(
+            [self._build_progress_section(), self._build_equipment_section()],
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+        )
+        tabs_row = ft.Row(spacing=8)
+
+        def switch_tab(index):
+            self.workspace_tab_index = index
+            attributes_view.visible = index == 0
+            planning_view.visible = index == 1
+            build_tabs()
+            self.update()
+
+        def build_tabs():
+            tabs_row.controls = [
+                ft.Button("属性目标", icon=ft.Icons.TUNE, on_click=lambda e: switch_tab(0),
+                          bgcolor=ft.Colors.PRIMARY_CONTAINER if self.workspace_tab_index == 0 else None),
+                ft.Button("进度与装备", icon=ft.Icons.FLAG, on_click=lambda e: switch_tab(1),
+                          bgcolor=ft.Colors.PRIMARY_CONTAINER if self.workspace_tab_index == 1 else None),
+            ]
+
+        attributes_view.visible = self.workspace_tab_index == 0
+        planning_view.visible = self.workspace_tab_index == 1
+        build_tabs()
+        self.content_container.controls.append(tabs_row)
+        self.content_container.controls.append(ft.Stack([attributes_view, planning_view], expand=True))
         self.content_container.controls.append(self._build_action_bar())
 
     def _build_attributes_panel_desktop(self):
@@ -458,7 +494,6 @@ class GrowthPage(ft.Column):
                 tar_field.value = cur_field.value
                 tar_field.update()
         
-        self._load_role_data()
         self._page.show_dialog(ft.SnackBar(content=ft.Text("已将当前属性复制到目标")))
 
     def _clear_target(self, e):
@@ -477,7 +512,6 @@ class GrowthPage(ft.Column):
                     tar_field.update()
             
             self._page.pop_dialog()
-            self._load_role_data()
             self._page.show_dialog(ft.SnackBar(content=ft.Text("已清空所有目标")))
         
         dialog = ft.AlertDialog(

@@ -1,0 +1,26 @@
+version: 1
+
+project:
+  name: menghuanTools
+  language: python
+
+python:
+  conda_environment: menghuanTools
+  environment_file: environment.yml
+  requirements_file: requirements.txt
+
+documentation:
+  development_logs: codeLogs
+  resolved_problem_logs: codeProblems
+  design_documents: codeMds
+
+standards:
+  dependency_management:
+    - Keep requirements.txt aligned with third-party packages imported by the project.
+    - Use environment.yml to create or update the menghuanTools conda environment.
+    - Declare default pip dependencies only in requirements.txt; environment.yml reuses that file.
+    - Keep optional dependencies commented and clearly labeled unless they become mandatory.
+  documentation_management:
+    - Write development logs to codeLogs.
+    - Write resolved-problem records to codeProblems.
+    - Write design documents to codeMds.

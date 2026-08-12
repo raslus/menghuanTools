@@ -1,8 +1,22 @@
+# Application UI
 flet==0.86.2
+
+# Data security
 cryptography>=3.4.8
-opencv-python>=4.8.0
-numpy>=1.24.0
+
+# Image processing, screen capture, and automation
+matplotlib>=3.7.0
 mss>=9.0.0
+numpy>=1.24.0
+opencv-python>=4.8.0
+Pillow>=9.5.0
 pyautogui>=0.9.54
+
+# Networking
+requests>=2.28.0
+
+# OCR (the primary engine used by the application)
 rapidocr-onnxruntime>=1.2.0
-# easyocr>=1.7.0  # 已替换为RapidOCR，如需回退可取消注释
+
+# Optional OCR fallback; install manually only when RapidOCR is unavailable.
+# easyocr>=1.7.0

@@ -319,10 +319,17 @@ class CoordinateOCR:
         "建邺城", "东海湾", "江南野外", "长安城", "大唐国境", "大唐境外",
         "长寿村", "长寿郊外", "傲来国", "花果山", "月宫", "大唐官府",
         "方寸山", "化生寺", "女儿村", "魔王寨", "狮陀岭", "地府", "盘丝洞",
-        "龙宫", "天宫", "五庄观", "普陀山", "境外", "西梁女国", "无名城"
+        "龙宫", "天宫", "五庄观", "普陀山", "境外", "西梁女国", "无名城",
+        "北俱芦洲", "麒麟山", "朱紫国", "宝象国", "碗子山", "墨家村",
+        "女娲神迹", "小西天", "小雷音寺", "蓬莱仙岛", "柳林坡", "比丘国",
     ]
 
-    GHOST_KEYWORDS = ["鬼", "钟馗", "捉鬼", "抓鬼", "任务", "领取"]
+    SMALL_GHOST_PATTERNS = [
+        r"钟[馗暌揆]", r"捉鬼", r"抓鬼", r"降伏.*鬼", r"缉拿.*鬼",
+    ]
+    BIG_GHOST_PATTERNS = [
+        r"鬼王任务", r"挑战鬼王", r"降伏鬼王", r"鬼王",
+    ]
 
     CHAR_REPLACEMENTS = {
         "O": "0", "o": "0", "Q": "0",
@@ -391,43 +398,78 @@ class CoordinateOCR:
 
     def _split_coordinate(self, num_str):
         """智能分割合并的坐标数字（如7396 -> (73, 96)）"""
-        length = len(num_str)
-        
-        if length == 4:
-            x = int(num_str[:2])
-            y = int(num_str[2:])
-            if x <= 255 and y <= 255:
-                return (x, y)
-        
-        if length == 3:
-            x = int(num_str[:1])
-            y = int(num_str[1:])
-            if x <= 255 and y <= 255:
-                return (x, y)
-            
-            x = int(num_str[:2])
-            y = int(num_str[2:])
-            if x <= 255 and y <= 255:
-                return (x, y)
-        
-        if length == 5:
-            x = int(num_str[:2])
-            y = int(num_str[2:])
-            if x <= 255 and y <= 255:
-                return (x, y)
-            
-            x = int(num_str[:3])
-            y = int(num_str[3:])
-            if x <= 255 and y <= 255:
-                return (x, y)
-        
+        if not num_str.isdigit() or not 2 <= len(num_str) <= 6:
+            return None
+        splits = []
+        for index in range(1, len(num_str)):
+            if index > 3 or len(num_str) - index > 3:
+                continue
+            x, y = int(num_str[:index]), int(num_str[index:])
+            if 0 <= x <= 999 and 0 <= y <= 999:
+                # Prefer balanced digit groups, then the longer X group because
+                # game maps (especially 大唐境外) commonly have a wider X axis.
+                splits.append((abs(index - (len(num_str) - index)), -index, (x, y)))
+        return min(splits)[2] if splits else None
+
+    def _classify_ghost_task(self, text):
+        """Return big/small/unknown, or None when text is not a ghost task."""
+        compact = re.sub(r"\s+", "", text or "")
+        if any(re.search(pattern, compact) for pattern in self.BIG_GHOST_PATTERNS):
+            return "big"
+        if any(re.search(pattern, compact) for pattern in self.SMALL_GHOST_PATTERNS):
+            return "small"
+        # OCR may preserve only a generic task phrase. Treat it as unknown instead
+        # of guessing big/small, but still allow coordinate extraction.
+        if "鬼" in compact and any(word in compact for word in ("任务", "坐标", "位置", "前往", "寻找")):
+            return "unknown"
         return None
 
-    def _is_ghost_hunting_text(self, text):
-        for keyword in self.GHOST_KEYWORDS:
-            if keyword in text:
-                return True
-        return False
+    def _extract_coordinate_candidates(self, text, map_name="", task_kind=None):
+        """Extract and rank coordinates by their textual task context."""
+        candidates = []
+        normalized = (text or "").replace("（", "(").replace("）", ")")
+        patterns = [
+            (r"(?:坐标|位置|位于|前往|寻找)[^\d]{0,10}(\d{1,3})\s*[,，.。:：、]\s*(\d{1,3})", 12),
+            (r"[\[(]\s*(\d{1,3})\s*[,，.。:：、\s]\s*(\d{1,3})\s*[\])]", 9),
+            (r"(\d{1,3})\s*[,，.。:：、]\s*(\d{1,3})", 7),
+            (r"(\d{1,3})\s+(\d{1,3})", 4),
+        ]
+        for pattern, base_score in patterns:
+            for match in re.finditer(pattern, normalized):
+                x, y = int(match.group(1)), int(match.group(2))
+                if not (0 <= x <= 999 and 0 <= y <= 999):
+                    continue
+                context = normalized[max(0, match.start() - 24):match.end() + 24]
+                score = base_score
+                if map_name and map_name in context:
+                    score += 5
+                if self._classify_ghost_task(context) is not None:
+                    score += 5
+                if task_kind in ("big", "small") and self._classify_ghost_task(context) == task_kind:
+                    score += 3
+                if any(word in context for word in ("等级", "奖励", "次数", "时间", "分钟", "回合")):
+                    score -= 6
+                candidates.append((score, match.start(), (x, y)))
+
+        # Some OCR engines merge bracketed coordinates, e.g. [7396].
+        for match in re.finditer(r"[\[(](\d{3,6})[\])]", normalized):
+            coords = self._split_coordinate(match.group(1))
+            if coords:
+                context = normalized[max(0, match.start() - 24):match.end() + 24]
+                score = 6 + (5 if self._classify_ghost_task(context) is not None else 0)
+                candidates.append((score, match.start(), coords))
+
+        for match in re.finditer(r"(?:坐标|位置|位于|前往|寻找)[^\d]{0,8}(\d{3,6})(?!\d)", normalized):
+            coords = self._split_coordinate(match.group(1))
+            if coords:
+                candidates.append((8, match.start(), coords))
+
+        if not candidates:
+            return None
+        # Prefer the strongest contextual match; retain reading order for ties.
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        logger.debug(f"坐标候选: {candidates}")
+        return candidates[0][2]
 
     def recognize_coordinates(self, search_region=None):
         if not _rapidocr_available and not _easyocr_available:
@@ -513,7 +555,8 @@ class CoordinateOCR:
             return texts
         
         try:
-            all_text = ""
+            map_text = ""
+            task_text = ""
             
             if self.custom_region:
                 map_region = None
@@ -538,7 +581,7 @@ class CoordinateOCR:
                     processed_img = self.preprocess_image(img)
                     texts = ocr_image(processed_img, "地图面板(预处理)")
                 
-                all_text = " ".join(texts)
+                map_text = " ".join(texts)
 
                 if self.ghost_task_region:
                     img = self.capture_screen_region(self.ghost_task_region)
@@ -549,7 +592,7 @@ class CoordinateOCR:
                         processed_img = self.preprocess_image(img)
                         texts = ocr_image(processed_img, "抓鬼任务(预处理)")
                     
-                    all_text += " " + " ".join(texts)
+                    task_text = " ".join(texts)
 
             else:
                 screen_width, screen_height = self.get_screen_size()
@@ -569,7 +612,9 @@ class CoordinateOCR:
                     processed_img = self.preprocess_image(img)
                     texts = ocr_image(processed_img, "地图面板(预处理)")
                 
-                all_text = " ".join(texts)
+                map_text = " ".join(texts)
+
+            all_text = " ".join(part for part in (map_text, task_text) if part)
     
             if not all_text.strip():
                 logger.debug("未识别到任何文字")
@@ -580,44 +625,34 @@ class CoordinateOCR:
                 logger.debug(f"文本修正: '{all_text}' -> '{corrected_text}'")
             all_text = corrected_text
     
-            map_name = self._extract_map_name(all_text)
-            is_ghost_hunting = self._is_ghost_hunting_text(all_text)
-            
-            pattern = r'(\d{1,3})\s*[,.，。、]\s*(\d{1,3})'
-            match = re.search(pattern, all_text)
-            
-            if not match:
-                pattern2 = r'(\d{1,3})\s+(\d{1,3})'
-                match = re.search(pattern2, all_text)
-            
-            coords = None
-            
-            if not match and map_name:
-                bracket_pattern = r'\[(\d{3,5})\]'
-                bracket_match = re.search(bracket_pattern, all_text)
-                if bracket_match:
-                    num_str = bracket_match.group(1)
-                    coords = self._split_coordinate(num_str)
-            
-            if coords:
-                if is_ghost_hunting:
+            task_kind = self._classify_ghost_task(task_text)
+            if task_kind is not None:
+                map_name = self._extract_map_name(task_text) or self._extract_map_name(map_text)
+                coords = self._extract_coordinate_candidates(task_text, map_name, task_kind)
+                if coords:
                     result_data = {
                         "type": "ghost",
+                        "ghost_size": task_kind,
                         "coords": coords,
                         "map_name": map_name,
-                        "text": all_text
+                        "text": all_text,
+                        "task_text": task_text,
                     }
-                    logger.info(f"识别到抓鬼任务: {map_name} ({coords[0]}, {coords[1]})")
-                else:
-                    result_data = {
-                        "type": "position",
-                        "coords": coords,
-                        "map_name": map_name,
-                        "text": all_text
-                    }
-                    logger.info(f"识别到当前位置: {map_name} ({coords[0]}, {coords[1]})")
-                
-                return result_data
+                    logger.info(f"识别到{task_kind}抓鬼任务: {map_name} ({coords[0]}, {coords[1]})")
+                    return result_data
+                logger.warning(f"已识别抓鬼任务类型({task_kind})，但未找到可靠坐标: {task_text}")
+
+            # No task was identified: parse only the map panel so task numbers
+            # cannot be mistaken for the player's current position.
+            map_name = self._extract_map_name(map_text)
+            coords = self._extract_coordinate_candidates(map_text, map_name)
+            if coords:
+                return {
+                    "type": "position",
+                    "coords": coords,
+                    "map_name": map_name,
+                    "text": all_text,
+                }
             
             if map_name:
                 return {
@@ -643,7 +678,8 @@ class CoordinateOCR:
             (r'(长寿).*(村|郊)', '长寿村'),
             (r'(建邺).*(城|镇)', '建邺城'),
             (r'(长安).*(城)', '长安城'),
-            (r'(大唐).*(国境|境外)', '大唐国境'),
+            (r'(大唐).*(境外)', '大唐境外'),
+            (r'(大唐).*(国境)', '大唐国境'),
             (r'(东海).*(湾)', '东海湾'),
             (r'(江南).*(野外)', '江南野外'),
             (r'(傲来).*(国)', '傲来国'),
@@ -676,14 +712,18 @@ class CoordinateOCR:
 
 
 class GhostCoordinatePredictor:
+    BASE_RADIUS = 50
+    MAX_SAMPLES_PER_MAP = 200
+
     def __init__(self):
         self.learning_data = {}
         self._load_learning_data()
         
-        self.map_rules = {
-            "五庄观": {"x_less": True, "y_less": True},
-            "普陀山": {"x_less": True, "y_less": True},
-            "境外": {"x_less": False, "y_less": None},
+        # Only cap maps whose coordinate extent is known. 大唐境外/境外 must not
+        # use the old global 255 cap because its X coordinate can exceed 600.
+        self.map_bounds = {
+            "大唐境外": (0, 650, 0, 160),
+            "境外": (0, 650, 0, 160),
         }
 
     def _load_learning_data(self):
@@ -718,81 +758,60 @@ class GhostCoordinatePredictor:
         }
 
     def predict_range(self, fake_x, fake_y, map_name=""):
-        base_radius = 30
-        
-        if map_name in self.learning_data:
-            stats = self.learning_data[map_name]
-            avg_offset_x = stats.get("avg_offset_x", 0)
-            avg_offset_y = stats.get("avg_offset_y", 0)
-            std_dev_x = stats.get("std_dev_x", 15)
-            std_dev_y = stats.get("std_dev_y", 15)
-            
-            adjusted_x = fake_x + avg_offset_x
-            adjusted_y = fake_y + avg_offset_y
-            
-            confidence_factor = min(stats.get("count", 0) * 0.05, 0.5)
-            radius_x = max(8, min(30, std_dev_x * (1.0 - confidence_factor)))
-            radius_y = max(8, min(30, std_dev_y * (1.0 - confidence_factor)))
-        else:
-            adjusted_x = fake_x
-            adjusted_y = fake_y
-            radius_x = base_radius
-            radius_y = base_radius
+        samples = self.learning_data.get(map_name, {}).get("samples", [])
+        nearby = sorted(
+            samples,
+            key=lambda s: (s["fake_x"] - fake_x) ** 2 + (s["fake_y"] - fake_y) ** 2,
+        )[:12]
 
-        rules = self.map_rules.get(map_name, {})
-        
-        small_map = map_name in ["五庄观", "普陀山"]
-        
-        if fake_x <= 50 and fake_y <= 50:
-            x_min = max(0, fake_x - 30)
+        adjusted_x, adjusted_y = float(fake_x), float(fake_y)
+        radius_x = radius_y = self.BASE_RADIUS
+        confidence = "规则预测"
+        if len(nearby) >= 3:
+            distances = np.array([
+                max(1.0, np.hypot(s["fake_x"] - fake_x, s["fake_y"] - fake_y))
+                for s in nearby
+            ])
+            weights = 1.0 / distances
+            offsets_x = np.array([s["real_x"] - s["fake_x"] for s in nearby], dtype=float)
+            offsets_y = np.array([s["real_y"] - s["fake_y"] for s in nearby], dtype=float)
+            # Median clipping prevents one incorrect feedback sample dominating the model.
+            med_x, med_y = np.median(offsets_x), np.median(offsets_y)
+            offsets_x = np.clip(offsets_x, med_x - 50, med_x + 50)
+            offsets_y = np.clip(offsets_y, med_y - 50, med_y + 50)
+            learned_x = float(np.average(offsets_x, weights=weights))
+            learned_y = float(np.average(offsets_y, weights=weights))
+            trust = min(0.85, len(nearby) / 15.0)
+            adjusted_x = fake_x + learned_x * trust
+            adjusted_y = fake_y + learned_y * trust
+            radius_x = max(12, min(50, int(np.percentile(np.abs(offsets_x - learned_x), 90) + 12)))
+            radius_y = max(12, min(50, int(np.percentile(np.abs(offsets_y - learned_y), 90) + 12)))
+            confidence = "学习预测" if len(nearby) >= 8 else "规则 + 少量样本"
+
+        # Official rule is ±50. Apply the verified edge-direction rule to X/Y
+        # independently; coordinates in 51..149 have no reliable direction rule.
+        x_min, x_max = fake_x - self.BASE_RADIUS, fake_x + self.BASE_RADIUS
+        y_min, y_max = fake_y - self.BASE_RADIUS, fake_y + self.BASE_RADIUS
+        if fake_x <= 50:
             x_max = fake_x
-            y_min = max(0, fake_y - 30)
-            y_max = fake_y
-        elif fake_x >= 150 and fake_y >= 150:
+        elif fake_x >= 150:
             x_min = fake_x
-            x_max = min(255, fake_x + 30)
-            y_min = fake_y
-            y_max = min(255, fake_y + 30)
-        elif fake_x <= 50 and fake_y >= 150:
-            x_min = max(0, fake_x - 30)
-            x_max = fake_x
-            y_min = fake_y
-            y_max = min(255, fake_y + 30)
-        elif fake_x >= 150 and fake_y <= 50:
-            x_min = fake_x
-            x_max = min(255, fake_x + 30)
-            y_min = max(0, fake_y - 30)
+        if fake_y <= 50:
             y_max = fake_y
-        elif fake_x < fake_y:
-            x_min = max(0, fake_x - radius_x)
-            x_max = fake_x
-            y_min = max(0, fake_y - radius_y)
-            y_max = fake_y
-        elif fake_x > fake_y:
-            x_min = fake_x
-            x_max = min(255, fake_x + radius_x)
+        elif fake_y >= 150:
             y_min = fake_y
-            y_max = min(255, fake_y + radius_y)
-        else:
-            x_min = max(0, fake_x - radius_x)
-            x_max = min(255, fake_x + radius_x)
-            y_min = max(0, fake_y - radius_y)
-            y_max = min(255, fake_y + radius_y)
 
-        if rules.get("x_less"):
-            x_max = min(x_max, fake_x)
-        elif rules.get("x_less") is not None and not rules.get("x_less"):
-            x_min = max(x_min, fake_x)
+        min_x, max_x, min_y, max_y = self.map_bounds.get(map_name, (0, None, 0, None))
+        x_min, y_min = max(min_x, x_min), max(min_y, y_min)
+        if max_x is not None:
+            x_max = min(max_x, x_max)
+        if max_y is not None:
+            y_max = min(max_y, y_max)
 
-        if rules.get("y_less"):
-            y_max = min(y_max, fake_y)
-        elif rules.get("y_less") is not None and not rules.get("y_less"):
-            y_min = max(y_min, fake_y)
-
-        x_min = max(0, x_min)
-        x_max = max(x_min + 10, x_max)
-        y_min = max(0, y_min)
-        y_max = max(y_min + 10, y_max)
+        # Learned point is a search priority, never a reason to discard the
+        # guaranteed rule range. Keep it inside the final rectangle.
+        adjusted_x = min(max(adjusted_x, x_min), x_max)
+        adjusted_y = min(max(adjusted_y, y_min), y_max)
 
         return {
             "center_x": int(adjusted_x),
@@ -804,6 +823,10 @@ class GhostCoordinatePredictor:
             "radius_x": int(radius_x),
             "radius_y": int(radius_y),
             "map_name": map_name,
+            "confidence": confidence,
+            "sample_count": len(samples),
+            "coord_max_x": max_x or 255,
+            "coord_max_y": max_y or 255,
         }
 
     def record_feedback(self, fake_x, fake_y, real_x, real_y, map_name=""):
@@ -824,6 +847,13 @@ class GhostCoordinatePredictor:
             }
 
         stats = self.learning_data[map_name]
+        stats.setdefault("samples", []).append({
+            "fake_x": fake_x,
+            "fake_y": fake_y,
+            "real_x": real_x,
+            "real_y": real_y,
+        })
+        stats["samples"] = stats["samples"][-self.MAX_SAMPLES_PER_MAP:]
         stats["count"] += 1
         stats["sum_offset_x"] += offset_x
         stats["sum_offset_y"] += offset_y
@@ -850,6 +880,10 @@ class GhostCoordinatePredictor:
 
 
 class PredictionOverlay:
+    MAX_MAP_WIDTH = 460
+    MAX_MAP_HEIGHT = 360
+    HEADER_HEIGHT = 44
+
     def __init__(self):
         self.running = False
         self.root = None
@@ -860,139 +894,183 @@ class PredictionOverlay:
         self.map_image = None
         self.map_photo = None
         self.force_refresh = False
+        self._generation = 0
+        self._lock = threading.RLock()
 
     def draw_prediction(self, prediction):
-        self.prediction_data = prediction
-        if not self.root:
-            self.start()
+        with self._lock:
+            self.prediction_data = dict(prediction)
+            self.force_refresh = True
+        self.start()
         self.update_event.set()
 
     def set_map_image(self, image_path):
         if os.path.exists(image_path):
-            self.map_image = image_path
-            self.force_refresh = True
-            if self.root:
-                self.update_event.set()
-
-    def clear_prediction(self):
-        self.prediction_data = None
-        self.force_refresh = True
-        if self.root:
+            with self._lock:
+                self.map_image = image_path
+                self.force_refresh = True
             self.update_event.set()
 
-    def _init_overlay(self):
-        import tkinter as tk
-        from PIL import Image, ImageTk
-        
-        self.root = tk.Tk()
-        self.root.title("")
-        self.root.overrideredirect(True)
-        self.root.attributes("-topmost", True)
-        
-        transparent_color = "#00ff00"
-        self.root.config(bg=transparent_color)
-        self.root.wm_attributes('-transparentcolor', transparent_color)
-        
-        self.canvas = tk.Canvas(
-            self.root,
-            width=256,
-            height=256,
-            bg=transparent_color,
-            highlightthickness=0
-        )
-        self.canvas.pack()
-        
-        self.root.geometry("256x256+0+0")
-        self.root.update_idletasks()
+    def clear_prediction(self):
+        with self._lock:
+            self.prediction_data = None
+            self.force_refresh = True
+        self.update_event.set()
+
+    def _make_window_no_activate(self, root):
+        """Keep the Windows overlay visible without taking focus from the game."""
+        if sys.platform != "win32" or not root:
+            return
+        try:
+            hwnd = root.winfo_id()
+            user32 = ctypes.windll.user32
+            gwl_exstyle = -20
+            ws_ex_transparent = 0x00000020
+            ws_ex_toolwindow = 0x00000080
+            ws_ex_noactivate = 0x08000000
+            style = user32.GetWindowLongW(hwnd, gwl_exstyle)
+            user32.SetWindowLongW(
+                hwnd,
+                gwl_exstyle,
+                style | ws_ex_transparent | ws_ex_toolwindow | ws_ex_noactivate,
+            )
+            hwnd_topmost = -1
+            swp_nomove = 0x0002
+            swp_nosize = 0x0001
+            swp_noactivate = 0x0010
+            user32.SetWindowPos(
+                hwnd, hwnd_topmost, 0, 0, 0, 0,
+                swp_nomove | swp_nosize | swp_noactivate,
+            )
+        except Exception as exc:
+            logger.warning(f"设置无焦点悬浮窗失败，将继续使用普通置顶窗口: {exc}")
 
     def start(self):
-        self.running = True
-        self.force_refresh = True
-        if not self.thread:
-            self.thread = threading.Thread(target=self._run_loop, daemon=True)
+        with self._lock:
+            if self.running and self.thread and self.thread.is_alive():
+                return
+            self.running = True
+            self.force_refresh = True
+            self._generation += 1
+            generation = self._generation
+            self.thread = threading.Thread(
+                target=self._run_loop,
+                args=(generation,),
+                daemon=True,
+                name="prediction-overlay",
+            )
             self.thread.start()
 
     def stop(self):
-        self.running = False
+        with self._lock:
+            self.running = False
+            self._generation += 1
         self.update_event.set()
-        if self.root:
-            try:
-                self.root.destroy()
-            except:
-                pass
-            self.root = None
-        self.thread = None
 
-    def _run_loop(self):
+    def _run_loop(self, generation):
+        while self.running and generation == self._generation:
+            try:
+                self._run_window(generation)
+            except Exception as exc:
+                logger.exception(f"悬浮窗异常，将自动重建: {exc}")
+            if self.running and generation == self._generation:
+                time.sleep(1)
+        with self._lock:
+            if generation + 1 >= self._generation:
+                self.root = None
+                self.canvas = None
+                self.thread = None
+
+    def _run_window(self, generation):
         import tkinter as tk
         from PIL import Image, ImageTk
-        
-        self._init_overlay()
-        
-        while self.running:
-            try:
-                if self.prediction_data or self.force_refresh:
-                    self.canvas.delete("all")
-                    
-                    if self.map_image and os.path.exists(self.map_image):
-                        try:
-                            img = Image.open(self.map_image)
-                            img = img.resize((256, 256), Image.LANCZOS)
-                            self.map_photo = ImageTk.PhotoImage(img)
-                            self.canvas.create_image(0, 0, anchor=tk.NW, image=self.map_photo)
-                        except:
-                            pass
-                    
-                    if self.prediction_data:
-                        pred_type = self.prediction_data.get("type", "ghost")
-                        
-                        center_x = self.prediction_data["center_x"]
-                        center_y = self.prediction_data["center_y"]
-                        dot_x = center_x
-                        dot_y = 255 - center_y
-                        
-                        if pred_type == "ghost":
-                            x_min = self.prediction_data["x_min"]
-                            x_max = self.prediction_data["x_max"]
-                            y_min = self.prediction_data["y_min"]
-                            y_max = self.prediction_data["y_max"]
-                            
-                            rect_x1 = x_min
-                            rect_y1 = 255 - y_max
-                            rect_x2 = x_max
-                            rect_y2 = 255 - y_min
-                            
-                            self.canvas.create_rectangle(
-                                rect_x1, rect_y1, rect_x2, rect_y2,
-                                outline="red",
-                                width=3,
-                            )
-                            
-                            self.canvas.create_oval(
-                                dot_x - 4, dot_y - 4, dot_x + 4, dot_y + 4,
-                                fill="blue",
-                                outline="white",
-                                width=2
-                            )
-                        else:
-                            self.canvas.create_oval(
-                                dot_x - 6, dot_y - 6, dot_x + 6, dot_y + 6,
-                                fill="#00ff00",
-                                outline="white",
-                                width=3
-                            )
-                        
-                        self.prediction_data = None
-                    
-                    self.force_refresh = False
-                    self.root.update_idletasks()
-                
-                self.root.update()
-                self.update_event.wait(0.5)
+
+        transparent_color = "#00ff00"
+        root = tk.Tk()
+        root.title("")
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        root.config(bg=transparent_color)
+        root.wm_attributes("-transparentcolor", transparent_color)
+        canvas = tk.Canvas(root, width=320, height=240, bg=transparent_color, highlightthickness=0)
+        canvas.pack()
+        root.geometry("320x240+20+80")
+        root.update_idletasks()
+        self._make_window_no_activate(root)
+        with self._lock:
+            self.root, self.canvas = root, canvas
+
+        try:
+            while self.running and generation == self._generation:
+                if self.force_refresh:
+                    self._render(canvas, root, tk, Image, ImageTk)
+                root.update_idletasks()
+                root.update()
+                self.update_event.wait(0.25)
                 self.update_event.clear()
-            except Exception as e:
-                logger.error(f"Overlay error: {e}")
-                break
+        finally:
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+    def _render(self, canvas, root, tk, Image, ImageTk):
+        with self._lock:
+            prediction = dict(self.prediction_data) if self.prediction_data else None
+            map_image = self.map_image
+            self.force_refresh = False
+        canvas.delete("all")
+        if not map_image or not os.path.exists(map_image):
+            return
+
+        with Image.open(map_image) as source:
+            original_width, original_height = source.size
+            scale = min(self.MAX_MAP_WIDTH / original_width, self.MAX_MAP_HEIGHT / original_height)
+            draw_width = max(1, int(original_width * scale))
+            draw_height = max(1, int(original_height * scale))
+            resized = source.convert("RGB").resize((draw_width, draw_height), Image.LANCZOS)
+        self.map_photo = ImageTk.PhotoImage(resized)
+        total_height = self.HEADER_HEIGHT + draw_height
+        canvas.config(width=draw_width, height=total_height)
+        root.geometry(f"{draw_width}x{total_height}+20+80")
+        canvas.create_rectangle(0, 0, draw_width, self.HEADER_HEIGHT, fill="#172033", outline="")
+        canvas.create_image(0, self.HEADER_HEIGHT, anchor=tk.NW, image=self.map_photo)
+
+        if not prediction:
+            canvas.create_text(12, 22, text="等待坐标识别…", fill="white", anchor=tk.W, font=("Microsoft YaHei", 11, "bold"))
+            return
+
+        map_name = prediction.get("map_name") or "未知地图"
+        ghost_label = {"big": "大鬼", "small": "小鬼", "unknown": "抓鬼"}.get(prediction.get("ghost_size"), "定位")
+        confidence = prediction.get("confidence", "当前位置")
+        sample_count = prediction.get("sample_count", 0)
+        canvas.create_text(12, 14, text=f"{map_name} · {ghost_label}", fill="white", anchor=tk.W, font=("Microsoft YaHei", 11, "bold"))
+        canvas.create_text(12, 33, text=f"{confidence} · 样本 {sample_count}", fill="#b9c7e6", anchor=tk.W, font=("Microsoft YaHei", 9))
+
+        def map_point(game_x, game_y):
+            calibrated = _game_to_map_pixel(map_name, game_x, game_y, map_image)
+            if calibrated:
+                return calibrated[0] * draw_width / calibrated[2], self.HEADER_HEIGHT + calibrated[1] * draw_height / calibrated[3]
+            max_x = max(1, prediction.get("coord_max_x", 255))
+            max_y = max(1, prediction.get("coord_max_y", 255))
+            return game_x * draw_width / max_x, self.HEADER_HEIGHT + draw_height - game_y * draw_height / max_y
+
+        dot_x, dot_y = map_point(prediction["center_x"], prediction["center_y"])
+        if prediction.get("type", "ghost") == "ghost":
+            corners = [
+                map_point(gx, gy)
+                for gx, gy in (
+                    (prediction["x_min"], prediction["y_min"]),
+                    (prediction["x_min"], prediction["y_max"]),
+                    (prediction["x_max"], prediction["y_min"]),
+                    (prediction["x_max"], prediction["y_max"]),
+                )
+            ]
+            xs, ys = [p[0] for p in corners], [p[1] for p in corners]
+            canvas.create_rectangle(min(xs), min(ys), max(xs), max(ys), outline="#ff3b30", width=4)
+            canvas.create_oval(dot_x - 6, dot_y - 6, dot_x + 6, dot_y + 6, fill="#2196f3", outline="white", width=2)
+        else:
+            canvas.create_oval(dot_x - 7, dot_y - 7, dot_x + 7, dot_y + 7, fill="#00d26a", outline="white", width=3)
 
 
 MAP_IMAGE_URLS = {
@@ -1010,9 +1088,133 @@ MAP_IMAGE_URLS = {
 }
 
 def get_map_image_path(map_name):
+    manifest = _load_captured_map_manifest()
+    captured = manifest.get(map_name, {})
+    captured_path = captured.get("path")
+    if captured.get("status") == "approved" and captured_path and os.path.exists(captured_path):
+        return captured_path
+    previous_path = captured.get("previous_approved_path")
+    if previous_path and os.path.exists(previous_path):
+        return previous_path
     maps_dir = os.path.join(os.path.dirname(__file__), "..", "assets", "maps")
     os.makedirs(maps_dir, exist_ok=True)
     return os.path.join(maps_dir, f"{map_name}.jpg")
+
+def _captured_map_storage():
+    storage_dir = os.path.join(get_app_data_dir(), "captured_maps")
+    os.makedirs(storage_dir, exist_ok=True)
+    return storage_dir, os.path.join(storage_dir, "manifest.json")
+
+def _load_captured_map_manifest():
+    _, manifest_path = _captured_map_storage()
+    if not os.path.exists(manifest_path):
+        return {}
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        logger.warning(f"读取采集地图清单失败: {exc}")
+        return {}
+
+def _save_captured_map_manifest(manifest):
+    _, manifest_path = _captured_map_storage()
+    temp_path = manifest_path + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as file:
+        json.dump(manifest, file, ensure_ascii=False, indent=2)
+    os.replace(temp_path, manifest_path)
+
+def _register_captured_map(map_name, image_path, region, image_size):
+    manifest = _load_captured_map_manifest()
+    previous = manifest.get(map_name, {})
+    previous_approved_path = previous.get("previous_approved_path")
+    previous_approved_calibration = previous.get("previous_approved_calibration")
+    if previous.get("status") == "approved" and os.path.exists(previous.get("path", "")):
+        previous_approved_path = previous["path"]
+        previous_approved_calibration = previous.get("calibration")
+    manifest[map_name] = {
+        "path": os.path.abspath(image_path),
+        "status": "pending",
+        "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "region": list(region),
+        "width": image_size[0],
+        "height": image_size[1],
+    }
+    if previous_approved_path:
+        manifest[map_name]["previous_approved_path"] = previous_approved_path
+    if previous_approved_calibration:
+        manifest[map_name]["previous_approved_calibration"] = previous_approved_calibration
+    _save_captured_map_manifest(manifest)
+
+def _set_captured_map_status(map_name, status):
+    manifest = _load_captured_map_manifest()
+    if map_name in manifest:
+        manifest[map_name]["status"] = status
+        manifest[map_name]["reviewed_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        if status == "approved":
+            manifest[map_name].pop("previous_approved_path", None)
+            manifest[map_name].pop("previous_approved_calibration", None)
+        _save_captured_map_manifest(manifest)
+
+def _fit_map_calibration(points):
+    if len(points) < 4:
+        return None, "至少需要 4 个标定点；3 点会被精确拟合，无法判断点击误差"
+    pixels = np.array([[p["pixel_x"], p["pixel_y"], 1.0] for p in points], dtype=float)
+    games = np.array([[p["game_x"], p["game_y"]] for p in points], dtype=float)
+    if np.linalg.matrix_rank(pixels) < 3:
+        return None, "标定点接近共线，请选择分布在地图不同区域的点"
+    coefficients, _, _, _ = np.linalg.lstsq(pixels, games, rcond=None)
+    # Iteratively reweighted least squares (Huber-style) reduces the influence
+    # of an occasional inaccurate click without silently discarding it.
+    for _ in range(6):
+        residuals = np.linalg.norm(pixels @ coefficients - games, axis=1)
+        median = float(np.median(residuals))
+        mad = float(np.median(np.abs(residuals - median)))
+        threshold = max(1.5, 2.5 * 1.4826 * mad)
+        weights = np.where(residuals <= threshold, 1.0, threshold / np.maximum(residuals, 1e-6))
+        weighted_pixels = pixels * np.sqrt(weights)[:, None]
+        weighted_games = games * np.sqrt(weights)[:, None]
+        coefficients, _, _, _ = np.linalg.lstsq(weighted_pixels, weighted_games, rcond=None)
+    predicted = pixels @ coefficients
+    errors = np.linalg.norm(predicted - games, axis=1)
+    linear = coefficients[:2, :]
+    if abs(np.linalg.det(linear)) < 1e-8:
+        return None, "标定矩阵不可逆，请重新选择标定点"
+    inverse_linear = np.linalg.inv(linear)
+    calibration = {
+        "points": points,
+        "pixel_to_game": coefficients.tolist(),
+        "game_to_pixel_linear": inverse_linear.tolist(),
+        "offset": coefficients[2, :].tolist(),
+        "rmse": float(np.sqrt(np.mean(errors ** 2))),
+        "max_error": float(np.max(errors)),
+        "valid": bool(np.sqrt(np.mean(errors ** 2)) <= 5.0 and np.max(errors) <= 10.0),
+    }
+    if not calibration["valid"]:
+        return calibration, f"标定误差过大：均方根 {calibration['rmse']:.2f}，最大 {calibration['max_error']:.2f}"
+    return calibration, None
+
+def _save_map_calibration(map_name, points):
+    calibration, error = _fit_map_calibration(points)
+    if calibration:
+        manifest = _load_captured_map_manifest()
+        if map_name in manifest:
+            manifest[map_name]["calibration"] = calibration
+            _save_captured_map_manifest(manifest)
+    return calibration, error
+
+def _game_to_map_pixel(map_name, game_x, game_y, image_path=None):
+    item = _load_captured_map_manifest().get(map_name, {})
+    active_path = item.get("path") if item.get("status") == "approved" else item.get("previous_approved_path")
+    calibration = item.get("calibration", {}) if item.get("status") == "approved" else item.get("previous_approved_calibration", {})
+    if image_path and active_path and os.path.normcase(os.path.abspath(image_path)) != os.path.normcase(os.path.abspath(active_path)):
+        return None
+    if not active_path or not os.path.exists(active_path) or not calibration.get("valid"):
+        return None
+    inverse = np.array(calibration["game_to_pixel_linear"], dtype=float)
+    offset = np.array(calibration["offset"], dtype=float)
+    pixel = (np.array([game_x, game_y], dtype=float) - offset) @ inverse
+    return float(pixel[0]), float(pixel[1]), item.get("width", 1), item.get("height", 1)
 
 def download_map_image(map_name):
     save_path = get_map_image_path(map_name)
@@ -1025,6 +1227,7 @@ class GhostHunterPage(ft.Column):
         super().__init__()
         self.data_manager = data_manager
         self._page = page
+        self.file_picker = ft.FilePicker()
         
         self.expand = True
         self.spacing = 15
@@ -1035,6 +1238,7 @@ class GhostHunterPage(ft.Column):
         
         self.is_running = False
         self.recognize_thread = None
+        self._recognition_generation = 0
         
         self.fake_x = 0
         self.fake_y = 0
@@ -1042,11 +1246,13 @@ class GhostHunterPage(ft.Column):
         self.real_y = 0
         self.map_name = ""
         self.current_type = None
+        self.current_ghost_size = "unknown"
+        self.workspace_tab_index = 0
         
         self._build_ui()
 
     def _build_ui(self):
-        self.title_text = ft.Text("👻 抓鬼辅助", size=24, weight=ft.FontWeight.BOLD)
+        self.title_text = ft.Text("抓鬼辅助", size=26, weight=ft.FontWeight.BOLD)
         
         self.fake_x_field = ft.TextField(
             label="假坐标 X", 
@@ -1064,32 +1270,7 @@ class GhostHunterPage(ft.Column):
         self.map_dropdown = ft.Dropdown(
             label="地图",
             width=150,
-            options=[
-                ft.DropdownOption("未知"),
-                ft.DropdownOption("建邺城"),
-                ft.DropdownOption("东海湾"),
-                ft.DropdownOption("江南野外"),
-                ft.DropdownOption("长安城"),
-                ft.DropdownOption("大唐国境"),
-                ft.DropdownOption("大唐境外"),
-                ft.DropdownOption("长寿村"),
-                ft.DropdownOption("长寿郊外"),
-                ft.DropdownOption("傲来国"),
-                ft.DropdownOption("花果山"),
-                ft.DropdownOption("月宫"),
-                ft.DropdownOption("大唐官府"),
-                ft.DropdownOption("方寸山"),
-                ft.DropdownOption("化生寺"),
-                ft.DropdownOption("女儿村"),
-                ft.DropdownOption("魔王寨"),
-                ft.DropdownOption("狮陀岭"),
-                ft.DropdownOption("地府"),
-                ft.DropdownOption("盘丝洞"),
-                ft.DropdownOption("龙宫"),
-                ft.DropdownOption("天宫"),
-                ft.DropdownOption("五庄观"),
-                ft.DropdownOption("普陀山"),
-            ],
+            options=[ft.DropdownOption(name) for name in ["未知", *CoordinateOCR.MAP_NAMES]],
             value="未知",
             on_select=self._on_map_change
         )
@@ -1189,6 +1370,8 @@ class GhostHunterPage(ft.Column):
                     ft.Row([self.map_stack], alignment=ft.MainAxisAlignment.CENTER),
                     ft.Row([
                         ft.Button("选择地图图片", icon=ft.Icons.IMAGE, on_click=self._pick_map_image),
+                        ft.Button("采集当前地图", icon=ft.Icons.SCREENSHOT_MONITOR, on_click=self._start_map_capture),
+                        ft.Button("审核采集结果", icon=ft.Icons.FACT_CHECK, on_click=self._show_map_capture_review),
                         ft.Text("绿框为预测范围", size=12, color=ft.Colors.GREY),
                     ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
                 ], spacing=10),
@@ -1229,36 +1412,74 @@ class GhostHunterPage(ft.Column):
             ),
         )
         
-        self.controls = [
-            ft.Row([self.title_text], alignment=ft.MainAxisAlignment.CENTER),
-            ft.Divider(),
-            
-            ft.Card(
-                content=ft.Container(
-                    content=ft.Column([
-                        ft.Text("坐标输入", size=16, weight=ft.FontWeight.BOLD),
-                        ft.Divider(),
-                        ft.Row([
-                            self.fake_x_field,
-                            ft.Text(",", size=24, weight=ft.FontWeight.BOLD),
-                            self.fake_y_field,
-                            self.map_dropdown,
-                            self.recognize_btn,
-                            self.toggle_btn,
-                        ], spacing=10, wrap=True, alignment=ft.MainAxisAlignment.CENTER),
-                    ], spacing=10),
-                    padding=15,
-                ),
+        self.coordinate_input_card = ft.Card(
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text("1. 获取任务坐标", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Divider(),
+                    ft.Row([
+                        self.fake_x_field,
+                        ft.Text(",", size=24, weight=ft.FontWeight.BOLD),
+                        self.fake_y_field,
+                        self.map_dropdown,
+                        self.recognize_btn,
+                        self.toggle_btn,
+                    ], spacing=10, alignment=ft.MainAxisAlignment.CENTER),
+                ], spacing=10),
+                padding=15,
             ),
-            
-            self._build_window_lock_card(),
-            self.map_section,
-            self.predict_result,
-            self.feedback_section,
-            self.stats_section,
+        )
+        self.recognition_view = ft.Column(
+            [
+                self.coordinate_input_card,
+                self._build_window_lock_card(),
+                self.predict_result,
+                self.feedback_section,
+            ],
+            spacing=12, expand=True, scroll=ft.ScrollMode.AUTO,
+        )
+        self.map_view = ft.Column([self.map_section], expand=True, scroll=ft.ScrollMode.AUTO)
+        self.learning_view = ft.Column(
+            [self.stats_section],
+            spacing=12, expand=True, scroll=ft.ScrollMode.AUTO,
+        )
+        self.workspace_tabs_row = ft.Row(spacing=8)
+        self.workspace = ft.Stack(
+            [self.recognition_view, self.map_view, self.learning_view],
+            expand=True,
+        )
+        self._build_workspace_tabs()
+
+        self.controls = [
+            ft.Column([
+                self.title_text,
+                ft.Text("识别任务坐标并预测真实范围；首次使用请先锁定游戏窗口。", color=ft.Colors.ON_SURFACE_VARIANT),
+            ], spacing=2),
+            self.workspace_tabs_row,
+            self.workspace,
         ]
         
         self._update_stats()
+
+    def _build_workspace_tabs(self):
+        tabs = [
+            ("识别与反馈", ft.Icons.CENTER_FOCUS_STRONG),
+            ("地图预测", ft.Icons.MAP),
+            ("学习统计", ft.Icons.INSIGHTS),
+        ]
+        self.workspace_tabs_row.controls = [
+            ft.Button(label, icon=icon, on_click=lambda e, index=i: self._switch_workspace_tab(index),
+                      bgcolor=ft.Colors.PRIMARY_CONTAINER if i == self.workspace_tab_index else None)
+            for i, (label, icon) in enumerate(tabs)
+        ]
+        views = [self.recognition_view, self.map_view, self.learning_view]
+        for index, view in enumerate(views):
+            view.visible = index == self.workspace_tab_index
+
+    def _switch_workspace_tab(self, index):
+        self.workspace_tab_index = index
+        self._build_workspace_tabs()
+        self.update()
 
     def _on_fake_coord_change(self, e):
         if self.current_type == "position":
@@ -1307,6 +1528,7 @@ class GhostHunterPage(ft.Column):
                 coords = result.get("coords")
                 map_name = result.get("map_name")
                 recognize_type = result.get("type", "position")
+                self.current_ghost_size = result.get("ghost_size", "unknown")
                 
                 self.current_type = recognize_type
                 
@@ -1323,10 +1545,13 @@ class GhostHunterPage(ft.Column):
                 
                 if recognize_type == "ghost":
                     self._calculate_prediction()
+                    size_label = {"big": "大鬼（鬼王）", "small": "小鬼", "unknown": "抓鬼"}.get(
+                        self.current_ghost_size, "抓鬼"
+                    )
                     if coords and map_name:
-                        self._page.show_dialog(ft.SnackBar(content=ft.Text(f"👻 识别到抓鬼任务: {map_name} ({coords[0]}, {coords[1]})")))
+                        self._page.show_dialog(ft.SnackBar(content=ft.Text(f"👻 识别到{size_label}任务: {map_name} ({coords[0]}, {coords[1]})")))
                     elif coords:
-                        self._page.show_dialog(ft.SnackBar(content=ft.Text(f"👻 识别到抓鬼坐标: ({coords[0]}, {coords[1]})")))
+                        self._page.show_dialog(ft.SnackBar(content=ft.Text(f"👻 识别到{size_label}坐标: ({coords[0]}, {coords[1]})")))
                 else:
                     self._update_position_display(coords, map_name)
                     if coords and map_name:
@@ -1347,14 +1572,23 @@ class GhostHunterPage(ft.Column):
             self._start_recognition()
 
     def _start_recognition(self):
+        if self.is_running:
+            return
         self.is_running = True
+        self._recognition_generation += 1
+        generation = self._recognition_generation
         self._recognition_fail_count = 0
         self.toggle_btn.text = "⏹ 停止识别"
         self.toggle_btn.icon = ft.Icons.STOP
         self.toggle_btn.bgcolor = ft.Colors.RED
         self.toggle_btn.update()
         
-        self.recognize_thread = threading.Thread(target=self._recognition_loop, daemon=True)
+        self.recognize_thread = threading.Thread(
+            target=self._recognition_loop,
+            args=(generation,),
+            daemon=True,
+            name="ghost-ocr-worker",
+        )
         self.recognize_thread.start()
         
         self.overlay.start()
@@ -1362,6 +1596,7 @@ class GhostHunterPage(ft.Column):
 
     def _stop_recognition(self):
         self.is_running = False
+        self._recognition_generation += 1
         self.toggle_btn.text = "▶ 开启识别"
         self.toggle_btn.icon = ft.Icons.PLAY_ARROW
         self.toggle_btn.bgcolor = ft.Colors.GREEN
@@ -1370,26 +1605,14 @@ class GhostHunterPage(ft.Column):
         self.overlay.stop()
         self._page.show_dialog(ft.SnackBar(content=ft.Text("已停止识别")))
 
-    def _recognition_loop(self):
-        while self.is_running:
+    def _recognition_loop(self, generation):
+        logger.info(f"后台识别线程启动: generation={generation}")
+        while self.is_running and generation == self._recognition_generation:
             try:
                 result = self.ocr.recognize_coordinates()
                 if result:
-                    coords = result.get("coords")
-                    map_name = result.get("map_name")
-                    recognize_type = result.get("type", "position")
-                    
-                    self.current_type = recognize_type
                     self._recognition_fail_count = 0
-                    
-                    if coords:
-                        self.fake_x_field.value = str(coords[0])
-                        self.fake_y_field.value = str(coords[1])
-                    
-                    if map_name:
-                        self.map_dropdown.value = map_name
-                    
-                    self._page.run_task(self._update_ui_after_recognition, recognize_type)
+                    self._page.run_task(self._apply_recognition_result, result)
                     time.sleep(2)
                 else:
                     self._recognition_fail_count += 1
@@ -1403,8 +1626,10 @@ class GhostHunterPage(ft.Column):
                     
                     self._page.run_task(self._update_map_only)
                     time.sleep(0.5)
-            except:
+            except Exception as exc:
+                logger.exception(f"后台识别异常，将在 1 秒后继续: {exc}")
                 time.sleep(1)
+        logger.info(f"后台识别线程结束: generation={generation}")
 
     def _reacquire_window_position(self):
         """重新获取梦幻西游窗口位置并更新识别区域"""
@@ -1420,8 +1645,7 @@ class GhostHunterPage(ft.Column):
                     
                     self._load_region_config()
                     
-                    self._page.run_task(lambda: self._page.show_dialog(
-                        ft.SnackBar(content=ft.Text(f"📍 窗口位置已更新: {new_region}"))))
+                    self._page.run_task(self._show_snackbar_async, f"📍 窗口位置已更新: {new_region}")
                 else:
                     logger.debug("窗口位置未变化")
             else:
@@ -1429,7 +1653,10 @@ class GhostHunterPage(ft.Column):
         except Exception as e:
             logger.error(f"重新获取窗口位置异常: {e}")
 
-    def _update_map_only(self):
+    async def _show_snackbar_async(self, message):
+        self._page.show_dialog(ft.SnackBar(content=ft.Text(message)))
+
+    async def _update_map_only(self):
         try:
             map_name = self.map_dropdown.value if self.map_dropdown.value != "未知" else ""
             if map_name:
@@ -1439,8 +1666,18 @@ class GhostHunterPage(ft.Column):
         except RuntimeError:
             pass
 
-    def _update_ui_after_recognition(self, recognize_type="position"):
+    async def _apply_recognition_result(self, result):
         try:
+            coords = result.get("coords")
+            map_name = result.get("map_name")
+            recognize_type = result.get("type", "position")
+            self.current_type = recognize_type
+            self.current_ghost_size = result.get("ghost_size", "unknown")
+            if coords:
+                self.fake_x_field.value = str(coords[0])
+                self.fake_y_field.value = str(coords[1])
+            if map_name:
+                self.map_dropdown.value = map_name
             self.fake_x_field.update()
             self.fake_y_field.update()
             self.map_dropdown.update()
@@ -1449,37 +1686,243 @@ class GhostHunterPage(ft.Column):
             if recognize_type == "ghost":
                 self._calculate_prediction()
             else:
-                coords = None
-                if self.fake_x_field.value and self.fake_y_field.value:
-                    coords = (int(self.fake_x_field.value), int(self.fake_y_field.value))
-                map_name = self.map_dropdown.value if self.map_dropdown.value != "未知" else ""
                 self._update_position_display(coords, map_name)
         except RuntimeError:
             pass
 
-    def _pick_map_image(self, e):
-        def on_file_picked(result):
-            if result and result.files and len(result.files) > 0:
-                file_path = result.files[0].path
-                if file_path and os.path.exists(file_path):
-                    self.map_image_container.content = ft.Image(src=file_path, width=400, height=300)
-                    try:
-                        self.map_stack.update()
-                    except RuntimeError:
-                        pass
-                    self._calculate_prediction()
-        
-        picker = ft.FilePicker(on_result=on_file_picked)
-        self._page.overlay.append(picker)
-        self._page.update()
-        picker.pick_files(
+    async def _pick_map_image(self, e):
+        files = await self.file_picker.pick_files(
             allowed_extensions=["jpg", "jpeg", "png", "bmp", "gif"],
-            dialog_title="选择地图图片"
+            dialog_title="选择地图图片",
+            allow_multiple=False,
+            file_type=ft.FilePickerFileType.CUSTOM,
         )
+        if not files:
+            return
+        file_path = files[0].path
+        if file_path and os.path.exists(file_path):
+            self.map_image_container.content = ft.Image(src=file_path, width=400, height=300)
+            try:
+                self.map_stack.update()
+            except RuntimeError:
+                pass
+            self._calculate_prediction()
+
+    def _start_map_capture(self, e):
+        map_name = self.map_dropdown.value
+        if not map_name or map_name == "未知":
+            self._page.show_dialog(ft.SnackBar(content=ft.Text("请先选择要采集的地图名称")))
+            return
+        self._page.show_dialog(ft.SnackBar(content=ft.Text("请拖动鼠标框选 Tab 小地图的纯地图区域，按 Esc 取消")))
+        threading.Thread(target=self._run_map_capture_selection, args=(map_name,), daemon=True).start()
+
+    def _run_map_capture_selection(self, map_name):
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.attributes("-fullscreen", True)
+        root.attributes("-topmost", True)
+        root.attributes("-alpha", 0.35)
+        root.configure(bg="black")
+        canvas = tk.Canvas(root, bg="black", highlightthickness=0, cursor="crosshair")
+        canvas.pack(fill=tk.BOTH, expand=True)
+        canvas.create_text(
+            root.winfo_screenwidth() // 2, 40,
+            text=f"框选 {map_name} 的纯地图区域（不要包含窗口边框和坐标文字）",
+            fill="white", font=("Microsoft YaHei", 16),
+        )
+        start = {"x": 0, "y": 0}
+        selected = {"region": None}
+        rectangle = {"id": None}
+
+        def on_press(event):
+            start["x"], start["y"] = event.x, event.y
+            if rectangle["id"]:
+                canvas.delete(rectangle["id"])
+            rectangle["id"] = canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="#00ffff", width=3)
+
+        def on_drag(event):
+            if rectangle["id"]:
+                canvas.coords(rectangle["id"], start["x"], start["y"], event.x, event.y)
+
+        def on_release(event):
+            left, right = sorted((start["x"], event.x))
+            top, bottom = sorted((start["y"], event.y))
+            if right - left >= 100 and bottom - top >= 80:
+                selected["region"] = (left, top, right, bottom)
+            root.quit()
+
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>", on_drag)
+        canvas.bind("<ButtonRelease-1>", on_release)
+        root.bind("<Escape>", lambda event: root.quit())
+        root.mainloop()
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+        region = selected["region"]
+        if not region:
+            return
+        try:
+            time.sleep(0.2)
+            screenshot = self.ocr.capture_screen_region(region)
+            screenshot = cv2.cvtColor(screenshot, cv2.COLOR_BGR2RGB)
+            image = PILImage.fromarray(screenshot)
+            storage_dir, _ = _captured_map_storage()
+            filename = f"{map_name}_{time.strftime('%Y%m%d_%H%M%S')}.png"
+            image_path = os.path.join(storage_dir, filename)
+            image.save(image_path, "PNG")
+            _register_captured_map(map_name, image_path, region, image.size)
+            self._page.run_task(self._show_snackbar_async, f"{map_name} 已采集，审核通过后自动优先使用")
+        except Exception as exc:
+            logger.error(f"地图采集失败: {exc}")
+            self._page.run_task(self._show_snackbar_async, f"地图采集失败: {exc}")
+
+    def _show_map_capture_review(self, e=None):
+        manifest = _load_captured_map_manifest()
+        pending = [(name, item) for name, item in manifest.items() if item.get("status") == "pending"]
+        if not pending:
+            self._page.show_dialog(ft.SnackBar(content=ft.Text("没有待审核的地图")))
+            return
+
+        review_list = ft.Column(spacing=16, scroll=ft.ScrollMode.AUTO, height=460, width=620)
+
+        def review(map_name, status):
+            if status == "approved":
+                item = _load_captured_map_manifest().get(map_name, {})
+                calibration = item.get("calibration", {})
+                if not calibration.get("valid"):
+                    self._page.show_dialog(ft.SnackBar(content=ft.Text("请先完成有效的多点坐标标定，再审核通过")))
+                    return
+            _set_captured_map_status(map_name, status)
+            self._page.pop_dialog()
+            if status == "approved":
+                if self.map_dropdown.value == map_name:
+                    self._load_map_image()
+                self._page.show_dialog(ft.SnackBar(content=ft.Text(f"{map_name} 已通过审核并优先使用")))
+            else:
+                self._page.show_dialog(ft.SnackBar(content=ft.Text(f"{map_name} 未通过审核，继续使用内置地图")))
+
+        for map_name, item in pending:
+            image_path = item.get("path", "")
+            review_list.controls.append(ft.Card(content=ft.Container(content=ft.Column([
+                ft.Row([
+                    ft.Text(map_name, size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text(f"{item.get('width', '?')}×{item.get('height', '?')}", color=ft.Colors.ON_SURFACE_VARIANT),
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.Image(src=image_path, width=560, height=300, fit=ft.BoxFit.CONTAIN),
+                ft.Text(
+                    self._calibration_status_text(item),
+                    color=ft.Colors.GREEN if item.get("calibration", {}).get("valid") else ft.Colors.ORANGE,
+                ),
+                ft.Row([
+                    ft.Button("标定坐标", icon=ft.Icons.CONTROL_POINT, on_click=lambda e, name=map_name: self._start_map_calibration(name)),
+                    ft.Button("通过并启用", icon=ft.Icons.CHECK, on_click=lambda e, name=map_name: review(name, "approved")),
+                    ft.Button("不通过", icon=ft.Icons.CLOSE, on_click=lambda e, name=map_name: review(name, "rejected")),
+                ], alignment=ft.MainAxisAlignment.END),
+            ], spacing=10), padding=12)))
+
+        self._page.show_dialog(ft.AlertDialog(
+            title=ft.Text("审核采集地图"),
+            content=review_list,
+            actions=[ft.TextButton("关闭", on_click=lambda e: self._page.pop_dialog())],
+        ))
+
+    def _calibration_status_text(self, item):
+        calibration = item.get("calibration", {})
+        if calibration.get("valid"):
+            return (
+                f"已标定 {len(calibration.get('points', []))} 点 · "
+                f"RMSE {calibration.get('rmse', 0):.2f} · 最大误差 {calibration.get('max_error', 0):.2f}"
+            )
+        if calibration:
+            return f"标定未通过 · RMSE {calibration.get('rmse', 0):.2f}"
+        return "尚未标定：至少选择 4 个不共线的已知坐标点"
+
+    def _start_map_calibration(self, map_name):
+        self._page.pop_dialog()
+        threading.Thread(target=self._run_map_calibration, args=(map_name,), daemon=True).start()
+
+    def _run_map_calibration(self, map_name):
+        import tkinter as tk
+        from tkinter import messagebox, simpledialog
+        from PIL import ImageTk
+
+        item = _load_captured_map_manifest().get(map_name, {})
+        image_path = item.get("path")
+        if not image_path or not os.path.exists(image_path):
+            return
+        original = PILImage.open(image_path).convert("RGB")
+        max_width, max_height = 1100, 720
+        scale = min(max_width / original.width, max_height / original.height, 1.0)
+        display = original.resize((int(original.width * scale), int(original.height * scale)), PILImage.LANCZOS)
+
+        root = tk.Tk()
+        root.title(f"标定地图坐标 - {map_name}")
+        root.attributes("-topmost", True)
+        info = tk.Label(root, text="点击地图上的已知位置并输入游戏坐标 X,Y；至少 4 点，建议 6 点以上且覆盖地图四周。", font=("Microsoft YaHei", 11))
+        info.pack(padx=10, pady=8)
+        canvas = tk.Canvas(root, width=display.width, height=display.height, highlightthickness=0)
+        canvas.pack(padx=10)
+        photo = ImageTk.PhotoImage(display)
+        canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+        points = list(item.get("calibration", {}).get("points", []))
+        status = tk.StringVar(value="")
+
+        def draw_points():
+            canvas.delete("calibration_point")
+            for index, point in enumerate(points, start=1):
+                x, y = point["pixel_x"] * scale, point["pixel_y"] * scale
+                canvas.create_oval(x - 5, y - 5, x + 5, y + 5, fill="#00ffff", outline="black", tags="calibration_point")
+                canvas.create_text(x + 10, y - 10, text=f"{index}:({point['game_x']},{point['game_y']})", fill="red", anchor=tk.W, tags="calibration_point")
+            calibration, error = _fit_map_calibration(points)
+            if calibration:
+                status.set(f"点数 {len(points)} · RMSE {calibration['rmse']:.2f} · 最大误差 {calibration['max_error']:.2f}" + (" · 可审核" if calibration["valid"] else " · 误差过大"))
+            else:
+                status.set(error or "")
+
+        def add_point(event):
+            value = simpledialog.askstring("输入游戏坐标", "请输入该位置的游戏坐标 X,Y，例如：120,85", parent=root)
+            if not value:
+                return
+            match = re.fullmatch(r"\s*(\d{1,3})\s*[,，\s]\s*(\d{1,3})\s*", value)
+            if not match:
+                messagebox.showerror("格式错误", "请输入 X,Y，例如：120,85", parent=root)
+                return
+            points.append({
+                "pixel_x": round(event.x / scale, 3),
+                "pixel_y": round(event.y / scale, 3),
+                "game_x": int(match.group(1)),
+                "game_y": int(match.group(2)),
+            })
+            draw_points()
+
+        def reset_points():
+            points.clear()
+            draw_points()
+
+        def finish():
+            calibration, error = _save_map_calibration(map_name, points)
+            if error:
+                messagebox.showerror("标定未通过", error, parent=root)
+                return
+            root.destroy()
+            self._page.run_task(self._show_snackbar_async, f"{map_name} 标定完成，请重新打开审核窗口")
+
+        canvas.bind("<Button-1>", add_point)
+        controls = tk.Frame(root)
+        controls.pack(fill=tk.X, padx=10, pady=8)
+        tk.Label(controls, textvariable=status, font=("Microsoft YaHei", 10)).pack(side=tk.LEFT)
+        tk.Button(controls, text="清空点位", command=reset_points).pack(side=tk.RIGHT, padx=5)
+        tk.Button(controls, text="完成标定", command=finish).pack(side=tk.RIGHT, padx=5)
+        draw_points()
+        root.mainloop()
     
     def _load_map_image(self):
         map_name = self.map_dropdown.value
-        if map_name == "未知" or map_name not in MAP_IMAGE_URLS:
+        if map_name == "未知":
             self.map_image_container.content = ft.Text("选择地图后显示", color=ft.Colors.GREY)
             self.prediction_rect.visible = False
             try:
@@ -1506,12 +1949,14 @@ class GhostHunterPage(ft.Column):
     def _download_map_async(self, map_name):
         map_path = download_map_image(map_name)
         if map_path and os.path.exists(map_path):
-            try:
-                self.map_image_container.content = ft.Image(src=map_path, width=400, height=300)
-                self.map_stack.update()
-                self._calculate_prediction()
-            except RuntimeError:
-                pass
+            self._page.run_task(self._apply_downloaded_map, map_name, map_path)
+
+    async def _apply_downloaded_map(self, map_name, map_path):
+        if self.map_dropdown.value != map_name:
+            return
+        self.map_image_container.content = ft.Image(src=map_path, width=400, height=300)
+        self.map_stack.update()
+        self._calculate_prediction()
     
     def _update_map_prediction(self, prediction):
         if not isinstance(self.map_image_container.content, ft.Image):
@@ -1544,14 +1989,33 @@ class GhostHunterPage(ft.Column):
         offset_x = (display_width - img_display_width) / 2
         offset_y = (display_height - img_display_height) / 2
         
-        scale_x = img_display_width / 255.0
-        scale_y = img_display_height / 255.0
-        
-        x_min = max(offset_x, offset_x + prediction["x_min"] * scale_x)
-        x_max = min(offset_x + img_display_width, offset_x + prediction["x_max"] * scale_x)
-        
-        y_min_screen = offset_y + img_display_height - prediction["y_max"] * scale_y
-        y_max_screen = offset_y + img_display_height - prediction["y_min"] * scale_y
+        map_name = prediction.get("map_name", "")
+        calibrated_corners = [
+            _game_to_map_pixel(map_name, gx, gy, img_path)
+            for gx, gy in (
+                (prediction["x_min"], prediction["y_min"]),
+                (prediction["x_min"], prediction["y_max"]),
+                (prediction["x_max"], prediction["y_min"]),
+                (prediction["x_max"], prediction["y_max"]),
+            )
+        ]
+        if all(calibrated_corners):
+            image_scale = img_display_width / max(1, actual_width)
+            xs = [offset_x + point[0] * image_scale for point in calibrated_corners]
+            ys = [offset_y + point[1] * image_scale for point in calibrated_corners]
+            x_min, x_max = min(xs), max(xs)
+            y_min_screen, y_max_screen = min(ys), max(ys)
+            scale_x = scale_y = image_scale
+        else:
+            scale_x = img_display_width / max(1, prediction.get("coord_max_x", 255))
+            scale_y = img_display_height / max(1, prediction.get("coord_max_y", 255))
+            x_min = offset_x + prediction["x_min"] * scale_x
+            x_max = offset_x + prediction["x_max"] * scale_x
+            y_min_screen = offset_y + img_display_height - prediction["y_max"] * scale_y
+            y_max_screen = offset_y + img_display_height - prediction["y_min"] * scale_y
+
+        x_min = max(offset_x, x_min)
+        x_max = min(offset_x + img_display_width, x_max)
         
         y_min_screen = max(offset_y, y_min_screen)
         y_max_screen = min(offset_y + img_display_height, y_max_screen)
@@ -1577,8 +2041,14 @@ class GhostHunterPage(ft.Column):
         else:
             center_x = prediction["center_x"]
             center_y = prediction["center_y"]
-            dot_x = offset_x + center_x * scale_x
-            dot_y = offset_y + img_display_height - center_y * scale_y
+            calibrated_center = _game_to_map_pixel(map_name, center_x, center_y, img_path)
+            if calibrated_center:
+                image_scale = img_display_width / max(1, actual_width)
+                dot_x = offset_x + calibrated_center[0] * image_scale
+                dot_y = offset_y + calibrated_center[1] * image_scale
+            else:
+                dot_x = offset_x + center_x * scale_x
+                dot_y = offset_y + img_display_height - center_y * scale_y
             
             self.prediction_rect.left = max(offset_x, dot_x - 10)
             self.prediction_rect.top = max(offset_y, dot_y - 10)
@@ -1667,10 +2137,19 @@ class GhostHunterPage(ft.Column):
             
             prediction = self.predictor.predict_range(x, y, map_name)
             prediction["type"] = "ghost"
+            prediction["ghost_size"] = self.current_ghost_size
             
             self.predict_result.content.content = ft.Column([
                 ft.Text("预测结果", size=16, weight=ft.FontWeight.BOLD),
                 ft.Divider(),
+                ft.Text(
+                    {"big": "大鬼（鬼王）", "small": "小鬼（钟馗捉鬼）", "unknown": "抓鬼任务"}.get(
+                        self.current_ghost_size, "抓鬼任务"
+                    ),
+                    size=13,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.PRIMARY,
+                ),
                 ft.Row([
                     ft.Text("假坐标:", size=14),
                     ft.Text(f"({x}, {y})", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE),
@@ -1684,6 +2163,11 @@ class GhostHunterPage(ft.Column):
                     ft.Text(f"X: {prediction['x_min']} - {prediction['x_max']}", size=14),
                     ft.Text(f"Y: {prediction['y_min']} - {prediction['y_max']}", size=14),
                 ], spacing=20),
+                ft.Text(
+                    f"{prediction['confidence']} · 地图样本 {prediction['sample_count']} 条",
+                    size=12,
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
                 ft.Text("搜索策略:", size=14),
                 ft.Text(self._get_search_strategy(x, y, map_name), size=12, color=ft.Colors.GREEN),
             ], spacing=10)
@@ -1706,27 +2190,21 @@ class GhostHunterPage(ft.Column):
     def _get_search_strategy(self, x, y, map_name):
         strategies = []
         
-        if map_name in ["五庄观", "普陀山"]:
-            strategies.append(f"⚠️ {map_name}：真坐标必定小于假坐标")
-        
-        if x < 50:
-            strategies.append("🔽 X坐标 < 50，向右下方向搜索")
-        elif x > 150:
-            strategies.append("🔼 X坐标 > 150，向右上方向搜索")
-        
-        if y < 50:
-            strategies.append("⬇️ Y坐标 < 50，向下搜索")
-        elif y > 150:
-            strategies.append("⬆️ Y坐标 > 150，向上搜索")
-        
-        if 50 <= x <= 150 and 50 <= y <= 150:
-            if x > y:
-                strategies.append("📌 X > Y：优先向右下搜索")
-            else:
-                strategies.append("📌 X <= Y：优先向左上搜索")
+        if x <= 50:
+            strategies.append("X ≤ 50：只搜索假坐标左侧")
+        elif x >= 150:
+            strategies.append("X ≥ 150：只搜索假坐标右侧")
+        if y <= 50:
+            strategies.append("Y ≤ 50：只搜索假坐标下方")
+        elif y >= 150:
+            strategies.append("Y ≥ 150：只搜索假坐标上方")
+
+        sample_count = len(self.predictor.learning_data.get(map_name, {}).get("samples", []))
+        if sample_count >= 3:
+            strategies.append(f"优先检查蓝色预测点附近（参考 {sample_count} 条反馈）")
         
         if not strategies:
-            strategies.append("📍 在假坐标周围50范围内搜索")
+            strategies.append("在假坐标横纵 ±50 的完整范围内搜索")
         
         return "\n".join(strategies)
 

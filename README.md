@@ -1,55 +1,45 @@
-# 账号管理系统
+# 梦幻工具箱
 
-基于 Python Flet 框架（v0.80+）开发的跨平台账号管理应用。
+面向 Windows 桌面端的梦幻西游个人工具，基于 Python 及 Flet 0.86.2。
 
-> 适配 Flet 0.80+ 新版本 API，使用异步编程模式。
+## 功能
 
-## 功能特性
+- 账号管理：保存、搜索、复制以及加密导入导出账号信息。
+- 收益记账：记录活动产出，查看明细、趋势图和分类汇总。
+- 养成规划：维护角色当前属性、目标属性、成长进度和装备备注。
+- 抓鬼辅助：OCR 识别大小鬼任务，预测坐标范围，采集并标定游戏小地图。
 
-- **账号管理**
-  - 添加新账号（用户名、密码、备注）
-  - 编辑已有账号信息
-  - 删除账号
-  - 搜索筛选账号
-  - 一键复制用户名/密码到剪贴板
+## Windows 环境
 
-- **统计页面（预留）**
-  - 账号数量统计
-  - 数据趋势图表（预留）
-  - 活动记录（预留）
-
-## 项目结构
-
-```
-.
-├── main.py              # 应用入口
-├── data_manager.py      # 数据管理模块
-├── requirements.txt     # 依赖列表
-├── pages/
-│   ├── __init__.py
-│   ├── account_page.py  # 账号管理页面
-│   └── stats_page.py    # 统计页面
-└── accounts.json        # 数据存储文件（自动创建）
-```
-
-## 安装运行
-
-1. 安装依赖：
-```bash
-pip install -r requirements.txt
-```
-
-2. 运行应用：
-```bash
+```powershell
+conda env create -f environment.yml
+conda activate menghuanTools
 python main.py
 ```
 
-## 数据存储
+更新已有环境：
 
-账号数据以 JSON 格式存储在 `accounts.json` 文件中，位于程序运行目录下。
+```powershell
+conda env update -n menghuanTools -f environment.yml --prune
+```
 
-## 平台支持
+## 数据目录
 
-- Windows
-- macOS
-- Linux
+开发运行时数据位于项目目录；打包运行时位于程序旁的 `data` 目录，包括：
+
+- `accounts.json`：账号数据。
+- `accounting.db`：收益记录。
+- `growth.db`：养成规划。
+- `ghost_hunter_learning.json`：抓鬼反馈样本。
+- `captured_maps/`：用户采集地图、审核状态及标定参数。
+- `logs/`：滚动运行日志，单文件最多 2 MB，保留 3 份备份。
+
+内置地图位于 `assets/maps`，审核通过的采集地图优先使用，异常时自动回退到内置地图。
+
+## 开发标准
+
+开发约定见 `codeConfig.yaml`：
+
+- 开发日志写入 `codeLogs`。
+- 已解决问题写入 `codeProblems`。
+- 设计文档写入 `codeMds`。

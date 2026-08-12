@@ -11,7 +11,6 @@ a = Analysis(
     ],
     hiddenimports=[
         'rapidocr_onnxruntime',
-        'easyocr',
         'core.data_manager',
         'core.growth_db',
         'core.accounting_db',
@@ -46,5 +45,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version='C:\\Users\\l\\AppData\\Local\\Temp\\9f879339-21a1-40b5-a4dd-c59f80b2994a',
+    version=None,
 )

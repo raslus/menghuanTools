@@ -191,12 +191,7 @@ ACTIVITY_TYPES = ["抓鬼", "副本", "神器", "周末活动", "摆摊卖货", 
 
 
 def format_number(value: float) -> str:
-    """格式化数字显示"""
-    if value >= 10000:
+    """格式化以“万”为输入单位的金额。"""
+    if abs(value) >= 10000:
         return f"{value / 10000:.2f}亿"
-    elif value >= 100000000:
-        return f"{value / 100000000:.2f}亿"
-    elif value >= 10000:
-        return f"{value / 10000:.2f}万"
-    else:
-        return f"{value:.2f}"
+    return f"{value:.2f}万"

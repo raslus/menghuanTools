@@ -1,6 +1,7 @@
 import json
 import os
 import base64
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from cryptography.fernet import Fernet
@@ -107,8 +108,18 @@ class DataManager:
         try:
             json_str = json.dumps(self.accounts, ensure_ascii=False, indent=2)
             encrypted_data = self._encrypt(json_str)
-            with open(self.data_file, 'wb') as f:
-                f.write(encrypted_data)
+            target_dir = os.path.dirname(os.path.abspath(self.data_file))
+            os.makedirs(target_dir, exist_ok=True)
+            fd, temp_path = tempfile.mkstemp(prefix="accounts_", suffix=".tmp", dir=target_dir)
+            try:
+                with os.fdopen(fd, 'wb') as f:
+                    f.write(encrypted_data)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temp_path, self.data_file)
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
             return True
         except Exception as e:
             print(f"保存数据失败: {e}")
@@ -259,20 +270,50 @@ class DataManager:
             
             if not isinstance(imported_accounts, list):
                 return False, 0
+
+            normalized_accounts = []
+            for account in imported_accounts:
+                if not isinstance(account, dict):
+                    continue
+                username = str(account.get("username", "")).strip()
+                password = str(account.get("password", ""))
+                if not username or not password:
+                    continue
+                normalized_accounts.append({
+                    "id": account.get("id"),
+                    "username": username,
+                    "password": password,
+                    "remark": str(account.get("remark", "")),
+                    "created_at": account.get("created_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "updated_at": account.get("updated_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                })
+
+            if not normalized_accounts:
+                return False, 0
             
             if merge:
-                # 合并数据，重新生成ID避免冲突
-                existing_ids = {a["id"] for a in self.accounts}
-                for acc in imported_accounts:
-                    if acc["id"] in existing_ids:
-                        acc["id"] = self._generate_id()
+                existing_ids = {a.get("id") for a in self.accounts}
+                next_id = max((i for i in existing_ids if isinstance(i, int)), default=0) + 1
+                for acc in normalized_accounts:
+                    if not isinstance(acc["id"], int) or acc["id"] in existing_ids:
+                        acc["id"] = next_id
+                        next_id += 1
+                    existing_ids.add(acc["id"])
                     self.accounts.append(acc)
             else:
-                # 覆盖数据
-                self.accounts = imported_accounts
+                used_ids = set()
+                next_id = 1
+                for acc in normalized_accounts:
+                    if not isinstance(acc["id"], int) or acc["id"] in used_ids:
+                        while next_id in used_ids:
+                            next_id += 1
+                        acc["id"] = next_id
+                    used_ids.add(acc["id"])
+                self.accounts = normalized_accounts
             
-            self.save_data()
-            return True, len(imported_accounts)
+            if not self.save_data():
+                return False, 0
+            return True, len(normalized_accounts)
         except Exception as e:
             print(f"导入失败: {e}")
             return False, 0

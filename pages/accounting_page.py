@@ -31,6 +31,8 @@ class AccountingPage(ft.Column):
 
         self.records = []
         self.filtered_records = []
+        self.workspace_tab_index = 0
+        self.summary_tab_index = 0
 
         self._build_ui()
         self.refresh_view()
@@ -40,30 +42,80 @@ class AccountingPage(ft.Column):
         self.refresh_view()
 
     def _build_ui(self):
-        self.stats_grid = ft.GridView(runs_count=4, spacing=10, expand=True)
+        self.stats_grid = ft.GridView(runs_count=4, spacing=10, height=96)
         self.filter_container = ft.Container()
-        self.charts_container = ft.Column(spacing=10)
-        self.action_bar = ft.Row(spacing=10, wrap=True)
+        self.charts_container = ft.Column(spacing=10, expand=True, scroll=ft.ScrollMode.AUTO)
+        self.action_bar = ft.Row(spacing=10)
         self.table_container = ft.Container(expand=True)
         
         self.summary_container = ft.Container(expand=True)
-        self.summary_tabs_row = ft.Row(spacing=5, wrap=True)
+        self.summary_tabs_row = ft.Row(spacing=5)
+
+        self.detail_view = ft.Column(
+            [self.action_bar, self.table_container],
+            spacing=10,
+            expand=True,
+        )
+        self.analysis_view = ft.Column(
+            [self.stats_grid, self.charts_container],
+            spacing=12,
+            expand=True,
+        )
+        self.summary_view = ft.Column(
+            [self.summary_tabs_row, self.summary_container],
+            spacing=10,
+            expand=True,
+        )
+
+        self.workspace_tabs_row = ft.Row(spacing=8)
+        self.workspace_container = ft.Stack(
+            [self.detail_view, self.analysis_view, self.summary_view],
+            expand=True,
+        )
+        self._build_workspace_tabs()
 
         self.controls = [
-            self.stats_grid,
-            ft.Divider(),
-            self.filter_container,
-            ft.Divider(),
-            self.charts_container,
-            ft.Divider(),
-            self.action_bar,
-            self.table_container,
-            ft.Divider(),
             ft.Column([
-                self.summary_tabs_row,
-                self.summary_container,
-            ], expand=True),
+                ft.Text("收益记账", size=26, weight=ft.FontWeight.BOLD),
+                ft.Text("记录每次活动的投入与收益，快速了解角色和活动表现。", color=ft.Colors.ON_SURFACE_VARIANT),
+            ], spacing=2),
+            ft.Container(
+                content=ft.Column([
+                    ft.Text("筛选记录", size=16, weight=ft.FontWeight.BOLD),
+                    self.filter_container,
+                ], spacing=10),
+                padding=16,
+                bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+                border_radius=12,
+            ),
+            self.workspace_tabs_row,
+            self.workspace_container,
         ]
+
+    def _build_workspace_tabs(self):
+        tab_data = [
+            ("明细记录", ft.Icons.RECEIPT_LONG),
+            ("数据分析", ft.Icons.INSIGHTS),
+            ("分类汇总", ft.Icons.TABLE_CHART),
+        ]
+        self.workspace_tabs_row.controls = [
+            ft.Button(
+                label,
+                icon=icon,
+                on_click=lambda e, index=i: self._switch_workspace_tab(index),
+                bgcolor=ft.Colors.PRIMARY_CONTAINER if i == self.workspace_tab_index else None,
+                color=ft.Colors.ON_PRIMARY_CONTAINER if i == self.workspace_tab_index else None,
+            )
+            for i, (label, icon) in enumerate(tab_data)
+        ]
+        views = [self.detail_view, self.analysis_view, self.summary_view]
+        for index, view in enumerate(views):
+            view.visible = index == self.workspace_tab_index
+
+    def _switch_workspace_tab(self, index):
+        self.workspace_tab_index = index
+        self._build_workspace_tabs()
+        self.update()
 
     def _build_stats_cards(self):
         cards = []
@@ -90,8 +142,7 @@ class AccountingPage(ft.Column):
             {"title": "MVP角色", "value": mvp_role, "icon": ft.Icons.STAR, "color": ft.Colors.PURPLE},
         ]
 
-        is_mobile = self._page.width < 600
-        self.stats_grid.runs_count = 2 if is_mobile else 4
+        self.stats_grid.runs_count = 4
 
         for data in card_data:
             card = ft.Card(
@@ -140,26 +191,17 @@ class AccountingPage(ft.Column):
         month_btn = ft.Button("本月", on_click=self._quick_date_month, height=36)
         reset_btn = ft.Button("重置", on_click=self._reset_filters, height=36)
 
-        is_mobile = self._page.width < 600
-        
-        if is_mobile:
-            self.filter_container.content = ft.Column([
-                ft.Row([today_btn, week_btn, month_btn, reset_btn], spacing=5, wrap=True),
-                ft.Row([self.date_picker_start, ft.Text("至", size=12), self.date_picker_end], spacing=5, alignment=ft.MainAxisAlignment.CENTER),
-                ft.Row([self.role_dropdown, self.activity_dropdown], spacing=5),
-            ], spacing=8)
-        else:
-            self.filter_container.content = ft.Row([
-                ft.Row([today_btn, week_btn, month_btn], spacing=5),
-                ft.VerticalDivider(width=1),
-                self.date_picker_start,
-                ft.Text("至"),
-                self.date_picker_end,
-                ft.VerticalDivider(width=1),
-                self.role_dropdown,
-                self.activity_dropdown,
-                reset_btn,
-            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        self.filter_container.content = ft.Row([
+            ft.Row([today_btn, week_btn, month_btn], spacing=5),
+            ft.VerticalDivider(width=1),
+            self.date_picker_start,
+            ft.Text("至"),
+            self.date_picker_end,
+            ft.VerticalDivider(width=1),
+            self.role_dropdown,
+            self.activity_dropdown,
+            reset_btn,
+        ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
     def _build_charts(self):
         if len(self.filtered_records) < 2:
@@ -175,30 +217,18 @@ class AccountingPage(ft.Column):
         chart1 = self._generate_daily_trend_chart()
         chart2 = self._generate_role_ranking_chart()
 
-        is_mobile = self._page.width < 600
-        
-        if is_mobile:
-            self.charts_container.controls = [
+        self.charts_container.controls = [
+            ft.Row([
                 ft.Card(
-                    content=ft.Container(content=chart1, padding=8),
+                    content=ft.Container(content=chart1, padding=10),
+                    expand=True,
                 ),
                 ft.Card(
-                    content=ft.Container(content=chart2, padding=8),
+                    content=ft.Container(content=chart2, padding=10),
+                    expand=True,
                 ),
-            ]
-        else:
-            self.charts_container.controls = [
-                ft.Row([
-                    ft.Card(
-                        content=ft.Container(content=chart1, padding=10),
-                        expand=True,
-                    ),
-                    ft.Card(
-                        content=ft.Container(content=chart2, padding=10),
-                        expand=True,
-                    ),
-                ], spacing=10, expand=True),
-            ]
+            ], spacing=10, expand=True),
+        ]
 
     def _generate_daily_trend_chart(self):
         daily_summary = self.db.get_daily_summary(self.filtered_records)
@@ -264,7 +294,8 @@ class AccountingPage(ft.Column):
         self.action_bar.controls = [add_btn, copy_btn, export_btn]
 
     def _build_data_table(self):
-        is_mobile = self._page.width < 600
+        # Windows desktop application: always show the complete data table.
+        is_mobile = False
         
         if is_mobile:
             columns = [
@@ -357,28 +388,29 @@ class AccountingPage(ft.Column):
                     ft.DataCell(ft.Text("")),
                 ]))
 
-        self.table_container.content = ft.ListView(
-            controls=[
-                ft.DataTable(
-                    columns=columns,
-                    rows=rows,
-                ),
-            ],
+        self.table_container.content = ft.Column(
+            controls=[ft.Row(
+                controls=[ft.DataTable(columns=columns, rows=rows)],
+                scroll=ft.ScrollMode.AUTO,
+            )],
             expand=True,
-            padding=0,
+            scroll=ft.ScrollMode.AUTO,
         )
 
     def _build_summary_tabs(self):
-        self.summary_tab_index = 0
-        
         def switch_tab(index):
             self.summary_tab_index = index
+            self._build_summary_tabs()
             self._update_summary_content()
+            self.update()
         
         self.summary_tabs_row.controls = [
-            ft.Button("按日期", on_click=lambda e: switch_tab(0)),
-            ft.Button("按角色", on_click=lambda e: switch_tab(1)),
-            ft.Button("按活动", on_click=lambda e: switch_tab(2)),
+            ft.Button("按日期", icon=ft.Icons.CALENDAR_MONTH, on_click=lambda e: switch_tab(0),
+                      bgcolor=ft.Colors.SECONDARY_CONTAINER if self.summary_tab_index == 0 else None),
+            ft.Button("按角色", icon=ft.Icons.PERSON, on_click=lambda e: switch_tab(1),
+                      bgcolor=ft.Colors.SECONDARY_CONTAINER if self.summary_tab_index == 1 else None),
+            ft.Button("按活动", icon=ft.Icons.CATEGORY, on_click=lambda e: switch_tab(2),
+                      bgcolor=ft.Colors.SECONDARY_CONTAINER if self.summary_tab_index == 2 else None),
         ]
         
         self._update_summary_content()
@@ -498,6 +530,7 @@ class AccountingPage(ft.Column):
         self._build_action_bar()
         self._build_data_table()
         self._build_summary_tabs()
+        self._build_workspace_tabs()
 
         try:
             self.update()

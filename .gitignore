@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+
+# User-generated runtime data
+captured_maps/
+logs/
+
+# Local tooling and build outputs
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.spec.bak

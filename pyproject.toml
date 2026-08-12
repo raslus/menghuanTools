@@ -1,27 +1,20 @@
 [project]
 name = "menghuan_tools"
 version = "1.0.0"
-description = "账号管理系统"
+description = "梦幻西游账号、收益、养成与抓鬼辅助工具箱"
 requires-python = ">=3.9"
 dependencies = [
-    "flet>=0.86",
+    "flet==0.86.2",
     "cryptography>=3.4.8",
+    "matplotlib>=3.7.0",
+    "mss>=9.0.0",
+    "numpy>=1.24.0",
+    "opencv-python>=4.8.0",
+    "Pillow>=9.5.0",
+    "pyautogui>=0.9.54",
+    "rapidocr-onnxruntime>=1.2.0",
+    "requests>=2.28.0",
 ]
-
-[tool.flet.android]
-# Android 权限配置
-permissions = [
-    "android.permission.READ_EXTERNAL_STORAGE",
-    "android.permission.WRITE_EXTERNAL_STORAGE",
-    "android.permission.READ_MEDIA_IMAGES",
-    "android.permission.READ_MEDIA_VIDEO",
-    "android.permission.READ_MEDIA_AUDIO",
-]
-
-# 存储访问框架 (SAF) 支持
-# Android 11+ 使用 SAF 替代直接文件访问
-[tool.flet.android.meta_data]
-android.support.FILE_PROVIDER_PATHS = "@xml/file_paths"
 
 [tool.flet.build]
 # 构建配置

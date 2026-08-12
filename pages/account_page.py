@@ -10,18 +10,22 @@ class AccountPage(ft.Column):
         super().__init__()
         self.data_manager = data_manager
         self._page = page
+        self.file_picker = ft.FilePicker()
         self.selected_file_path = None
         self.file_picker = None
+        self.workspace_tab_index = 0
         
         app_data_dir = get_app_data_dir()
         db_path = os.path.join(app_data_dir, "growth.db")
         self.growth_db = GrowthDB(db_path)
 
         self.expand = True
-        self.spacing = 10
+        self.spacing = 16
+
+        self.account_count_text = ft.Text("0 个账号", color=ft.Colors.ON_SURFACE_VARIANT)
 
         self.search_field = ft.TextField(
-            label="搜索账号",
+            hint_text="按用户名搜索账号",
             prefix_icon=ft.Icons.SEARCH,
             on_change=self.on_search_change,
             expand=True,
@@ -33,25 +37,15 @@ class AccountPage(ft.Column):
             on_click=self.show_add_dialog,
         )
 
-        self.import_button = ft.IconButton(
-            icon=ft.Icons.UPLOAD,
-            tooltip="导入账号",
-            on_click=self.show_import_dialog,
-        )
-        self.export_button = ft.IconButton(
-            icon=ft.Icons.DOWNLOAD,
-            tooltip="导出账号",
-            on_click=self.show_export_dialog,
-        )
-
         self.accounts_list = ft.ListView(spacing=10)
 
         self.empty_state = ft.Container(
             content=ft.Column(
                 [
-                    ft.Icon(ft.Icons.INBOX, size=64, color=ft.Colors.OUTLINE),
-                    ft.Text("暂无账号数据", size=16, color=ft.Colors.OUTLINE),
-                    ft.Text("点击右上角按钮添加账号", size=12, color=ft.Colors.OUTLINE),
+                    ft.Icon(ft.Icons.PERSON_ADD_ALT_1, size=64, color=ft.Colors.PRIMARY),
+                    ft.Text("还没有保存账号", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text("添加第一个账号，之后可以快速复制登录信息", color=ft.Colors.ON_SURFACE_VARIANT),
+                    ft.Button("添加第一个账号", icon=ft.Icons.ADD, on_click=self.show_add_dialog),
                 ],
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=10,
@@ -62,22 +56,48 @@ class AccountPage(ft.Column):
         self._build_ui()
 
     def _build_ui(self):
-        self.controls = [
-            ft.Row(
-                [
-                    self.search_field,
-                    ft.Row(
-                        [self.import_button, self.export_button, self.add_button],
-                        spacing=10,
-                    ),
-                ],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            ),
-            ft.Divider(),
+        self.account_toolbar = ft.Row(
+            [self.search_field, self.add_button],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        )
+        self.account_view = ft.Column([
+            self.account_toolbar,
+            self.account_count_text,
             ft.Container(
                 content=ft.Stack([self.empty_state, self.accounts_list]),
                 expand=True,
             ),
+        ], spacing=12, expand=True)
+        self.backup_view = ft.Column([
+            ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.SECURITY, size=44, color=ft.Colors.PRIMARY),
+                    ft.Text("数据备份与迁移", size=20, weight=ft.FontWeight.BOLD),
+                    ft.Text("将账号加密导出到本地，或从已有备份恢复账号。", color=ft.Colors.ON_SURFACE_VARIANT),
+                    ft.Row([
+                        ft.Button("导入备份", icon=ft.Icons.UPLOAD, on_click=self.show_import_dialog),
+                        ft.Button("导出备份", icon=ft.Icons.DOWNLOAD, on_click=self.show_export_dialog),
+                    ], spacing=12),
+                    ft.Text("建议为导出文件设置密码，并将备份保存在安全位置。", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=14),
+                alignment=ft.Alignment(0, -0.5),
+                expand=True,
+            ),
+        ], expand=True)
+        self.workspace_tabs_row = ft.Row(spacing=8)
+        self.workspace = ft.Stack([self.account_view, self.backup_view], expand=True)
+        self._build_workspace_tabs()
+
+        self.controls = [
+            ft.Column(
+                [
+                    ft.Text("账号管理", size=26, weight=ft.FontWeight.BOLD),
+                    ft.Text("集中保管账号信息，支持加密导入和导出备份。", color=ft.Colors.ON_SURFACE_VARIANT),
+                ],
+                spacing=2,
+            ),
+            self.workspace_tabs_row,
+            self.workspace,
         ]
         self._load_accounts()
         
@@ -86,12 +106,28 @@ class AccountPage(ft.Column):
         except RuntimeError:
             pass
 
+    def _build_workspace_tabs(self):
+        tabs = [("账号列表", ft.Icons.PEOPLE), ("数据备份", ft.Icons.BACKUP)]
+        self.workspace_tabs_row.controls = [
+            ft.Button(label, icon=icon, on_click=lambda e, index=i: self._switch_workspace_tab(index),
+                      bgcolor=ft.Colors.PRIMARY_CONTAINER if i == self.workspace_tab_index else None)
+            for i, (label, icon) in enumerate(tabs)
+        ]
+        self.account_view.visible = self.workspace_tab_index == 0
+        self.backup_view.visible = self.workspace_tab_index == 1
+
+    def _switch_workspace_tab(self, index):
+        self.workspace_tab_index = index
+        self._build_workspace_tabs()
+        self.update()
+
     def on_search_change(self, e):
         self.refresh_accounts(e.control.value)
 
     def _load_accounts(self):
         self.accounts_list.controls.clear()
         accounts = self.data_manager.get_all_accounts()
+        self.account_count_text.value = f"{len(accounts)} 个账号"
         if not accounts:
             self.empty_state.visible = True
             self.accounts_list.visible = False
@@ -106,7 +142,13 @@ class AccountPage(ft.Column):
         accounts = self.data_manager.get_all_accounts()
         if search_text:
             accounts = [a for a in accounts if search_text.lower() in a.get("username", "").lower()]
+        self.account_count_text.value = f"找到 {len(accounts)} 个账号" if search_text else f"{len(accounts)} 个账号"
         if not accounts:
+            empty_title = "没有匹配的账号" if search_text else "还没有保存账号"
+            empty_hint = "换个关键词试试" if search_text else "添加第一个账号，之后可以快速复制登录信息"
+            self.empty_state.content.controls[1].value = empty_title
+            self.empty_state.content.controls[2].value = empty_hint
+            self.empty_state.content.controls[3].visible = not bool(search_text)
             self.empty_state.visible = True
             self.accounts_list.visible = False
         else:
@@ -137,6 +179,7 @@ class AccountPage(ft.Column):
             self.show_delete_dialog(account)
 
         return ft.Card(
+            elevation=0,
             content=ft.Container(
                 content=ft.Column(
                     [
@@ -166,7 +209,9 @@ class AccountPage(ft.Column):
                     ],
                     spacing=5,
                 ),
-                padding=15,
+                padding=16,
+                border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+                border_radius=12,
             ),
         )
 
@@ -265,13 +310,14 @@ class AccountPage(ft.Column):
         selected_path_text = ft.Text("未选择文件", size=12, color=ft.Colors.OUTLINE)
 
         async def pick_file_click(e):
-            result = await self._page.pick_files(
+            files = await self.file_picker.pick_files(
                 allow_multiple=False,
                 allowed_extensions=["txt", "json", "bak", "enc"],
+                file_type=ft.FilePickerFileType.CUSTOM,
             )
-            if result and result.files and len(result.files) > 0:
-                self.selected_file_path = result.files[0].path
-                selected_path_text.value = f"已选择: {result.files[0].name}"
+            if files:
+                self.selected_file_path = files[0].path
+                selected_path_text.value = f"已选择: {files[0].name}"
                 selected_path_text.update()
 
         def do_import(e):
@@ -316,10 +362,11 @@ class AccountPage(ft.Column):
         selected_path_text = ft.Text("未选择保存位置", size=12, color=ft.Colors.OUTLINE)
 
         async def pick_save_click(e):
-            path = await self._page.save_file(
+            path = await self.file_picker.save_file(
                 dialog_title="导出账号备份",
                 file_name="accounts_backup.txt",
                 allowed_extensions=["txt"],
+                file_type=ft.FilePickerFileType.CUSTOM,
             )
             if path:
                 self.selected_file_path = path
