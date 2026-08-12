@@ -30,7 +30,8 @@ class QuizAssistantPage(ft.Column):
         # 数据库
         app_data_dir = get_app_data_dir()
         db_path = os.path.join(app_data_dir, "quiz_bank.db")
-        self.quiz_db = QuizDB(db_path)
+        seed_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "quiz_bank_seed.csv")
+        self.quiz_db = QuizDB(db_path, seed_file=seed_path)
 
         # OCR 引擎
         self.ocr_engine = OCREngine()
@@ -39,6 +40,9 @@ class QuizAssistantPage(ft.Column):
         self.custom_region = None          # 锁定的窗口区域 (left, top, right, bottom)
         self.locked_window_title = None
         self.quiz_region = None            # 答题识别区域 (left, top, right, bottom)
+        self.selected_category = ""
+        self.page_size = 50
+        self.current_page = 1
 
         # UI 布局
         self.expand = True
@@ -88,10 +92,17 @@ class QuizAssistantPage(ft.Column):
 
         # 题库搜索
         self.search_field = ft.TextField(
-            label="搜索题目或答案",
+            label="搜索问题、答案或分类",
             prefix_icon=ft.Icons.SEARCH,
             on_change=self._on_search_change,
             expand=True,
+        )
+        self.category_dropdown = ft.Dropdown(
+            label="分类",
+            value="全部分类",
+            options=[ft.DropdownOption("全部分类")],
+            on_select=self._on_category_change,
+            width=150,
         )
 
         # 题库表格
@@ -110,6 +121,17 @@ class QuizAssistantPage(ft.Column):
 
         # 统计文本
         self.stats_text = ft.Text("题库：0 条", size=13, color=ft.Colors.OUTLINE)
+        self.page_text = ft.Text("第 1 / 1 页", size=13, color=ft.Colors.ON_SURFACE_VARIANT)
+        self.previous_page_btn = ft.IconButton(
+            ft.Icons.CHEVRON_LEFT,
+            tooltip="上一页",
+            on_click=lambda e: self._change_page(-1),
+        )
+        self.next_page_btn = ft.IconButton(
+            ft.Icons.CHEVRON_RIGHT,
+            tooltip="下一页",
+            on_click=lambda e: self._change_page(1),
+        )
 
         # 题库操作按钮
         self.add_btn = ft.ElevatedButton(
@@ -124,14 +146,16 @@ class QuizAssistantPage(ft.Column):
 
         # 组装布局
         self.controls = [
-            # 顶部操作栏
-            ft.Card(
-                content=ft.Container(
+            ft.Column([
+                ft.Text("答题器助手", size=26, weight=ft.FontWeight.BOLD),
+                ft.Text(
+                    "框选游戏题目，识别文字并从本地题库快速匹配答案。",
+                    color=ft.Colors.ON_SURFACE_VARIANT,
+                ),
+            ], spacing=2),
+            ft.Container(
                     content=ft.Column([
-                        ft.Row([
-                            ft.Icon(ft.Icons.HELP, size=24, color=ft.Colors.PRIMARY),
-                            ft.Text("答题器助手", size=20, weight=ft.FontWeight.BOLD),
-                        ]),
+                        ft.Text("识别设置", size=16, weight=ft.FontWeight.BOLD),
                         ft.Row([
                             self.lock_window_btn,
                             self.unlock_btn,
@@ -143,12 +167,13 @@ class QuizAssistantPage(ft.Column):
                         ], spacing=10),
                         ft.Row([
                             self.recognize_btn,
-                            ft.Text("快捷键 Ctrl+Shift+A（待实现）", size=12,
-                                    color=ft.Colors.OUTLINE),
+                            ft.Text("识别完成后会显示最接近的 5 个答案", size=12,
+                                    color=ft.Colors.ON_SURFACE_VARIANT),
                         ], spacing=10),
                     ], spacing=8),
-                    padding=15,
-                ),
+                    padding=16,
+                    bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+                    border_radius=12,
             ),
             # 主内容区
             ft.Row([
@@ -177,7 +202,7 @@ class QuizAssistantPage(ft.Column):
                             ft.Text("题库管理", size=16, weight=ft.FontWeight.BOLD),
                             self.stats_text,
                         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                        self.search_field,
+                        ft.Row([self.search_field, self.category_dropdown], spacing=8),
                         ft.Row([
                             self.add_btn, self.import_btn, self.export_btn,
                         ], spacing=5),
@@ -187,6 +212,14 @@ class QuizAssistantPage(ft.Column):
                             ], scroll=ft.ScrollMode.AUTO, expand=True),
                             expand=True,
                         ),
+                        ft.Row([
+                            ft.Text("每页 50 条", size=12, color=ft.Colors.OUTLINE),
+                            ft.Row([
+                                self.previous_page_btn,
+                                self.page_text,
+                                self.next_page_btn,
+                            ], spacing=2),
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     ], spacing=8, expand=True),
                     expand=4,
                     padding=10,
@@ -506,18 +539,34 @@ class QuizAssistantPage(ft.Column):
     # ------------------------------------------------------------------
     def _on_search_change(self, e):
         """搜索框内容变化"""
-        keyword = e.control.value.strip()
-        self._refresh_quiz_table(keyword)
+        self.current_page = 1
+        self._refresh_quiz_table()
+
+    def _on_category_change(self, e):
+        """切换题目分类。"""
+        self.selected_category = "" if e.control.value == "全部分类" else e.control.value
+        self.current_page = 1
+        self._refresh_quiz_table()
+
+    def _change_page(self, delta: int):
+        self.current_page = max(1, self.current_page + delta)
+        self._refresh_quiz_table()
 
     def _refresh_quiz_table(self, keyword: str = ""):
         """刷新题库表格"""
-        if keyword:
-            questions = self.quiz_db.search_questions(keyword)
-        else:
-            questions = self.quiz_db.get_all_questions()
+        keyword = keyword or (self.search_field.value or "").strip()
+        filtered_total = self.quiz_db.count_questions(keyword, self.selected_category)
+        page_count = max(1, (filtered_total + self.page_size - 1) // self.page_size)
+        self.current_page = min(self.current_page, page_count)
+        questions = self.quiz_db.query_questions(
+            keyword=keyword,
+            category=self.selected_category,
+            limit=self.page_size,
+            offset=(self.current_page - 1) * self.page_size,
+        )
 
         self.quiz_table.rows.clear()
-        for q in questions[:200]:  # 限制显示数量
+        for q in questions:
             self.quiz_table.rows.append(
                 ft.DataRow(cells=[
                     ft.DataCell(ft.Text(q["question"], max_lines=2,
@@ -548,6 +597,18 @@ class QuizAssistantPage(ft.Column):
             f"题库：{stats['total']} 条 | 分类：{stats['categories']} | "
             f"总命中：{stats['total_hits']}"
         )
+        categories = self.quiz_db.get_categories()
+        current_category = self.category_dropdown.value or "全部分类"
+        self.category_dropdown.options = [ft.DropdownOption("全部分类")] + [
+            ft.DropdownOption(category) for category in categories
+        ]
+        if current_category not in ["全部分类", *categories]:
+            current_category = "全部分类"
+            self.selected_category = ""
+        self.category_dropdown.value = current_category
+        self.page_text.value = f"第 {self.current_page} / {page_count} 页 · {filtered_total} 条结果"
+        self.previous_page_btn.disabled = self.current_page <= 1
+        self.next_page_btn.disabled = self.current_page >= page_count
 
         self._page.update()
 
@@ -570,8 +631,7 @@ class QuizAssistantPage(ft.Column):
         # 查找现有题目
         existing = None
         if is_edit:
-            all_questions = self.quiz_db.get_all_questions()
-            existing = next((q for q in all_questions if q["id"] == question_id), None)
+            existing = self.quiz_db.get_question(question_id)
             if not existing:
                 self._show_snackbar("题目不存在")
                 return
@@ -601,14 +661,19 @@ class QuizAssistantPage(ft.Column):
                 self._show_snackbar("问题和答案不能为空")
                 return
 
-            if is_edit:
-                self.quiz_db.update_question(question_id, question, answer, category)
-                self._show_snackbar("题目已更新")
-            else:
-                self.quiz_db.add_question(question, answer, category)
-                self._show_snackbar("题目已添加")
+            try:
+                if is_edit:
+                    self.quiz_db.update_question(question_id, question, answer, category)
+                    message = "题目已更新"
+                else:
+                    self.quiz_db.add_question(question, answer, category)
+                    message = "题目已添加"
+            except ValueError as ex:
+                self._show_snackbar(str(ex))
+                return
 
             self._page.pop_dialog()
+            self._show_snackbar(message)
             self._refresh_quiz_table(self.search_field.value.strip() if self.search_field.value else "")
 
         dialog = ft.AlertDialog(

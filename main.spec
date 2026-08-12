@@ -8,12 +8,14 @@ a = Analysis(
     datas=[
         ('models/easyocr', 'models/easyocr'),
         ('assets/maps', 'assets/maps'),
+        ('data/quiz_bank_seed.csv', 'data'),
     ],
     hiddenimports=[
         'rapidocr_onnxruntime',
         'core.data_manager',
         'core.growth_db',
         'core.accounting_db',
+        'core.quiz_db',
         'utils.platform_utils',
         'utils.logger_setup',
     ],
