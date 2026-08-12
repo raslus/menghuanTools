@@ -1266,6 +1266,14 @@ class GhostHunterPage(ft.Column):
             input_filter=ft.NumbersOnlyInputFilter(),
             on_change=self._on_fake_coord_change
         )
+        self.real_x_field = ft.TextField(
+            label="真实 X", width=100, input_filter=ft.NumbersOnlyInputFilter(),
+            on_change=self._on_real_coord_change,
+        )
+        self.real_y_field = ft.TextField(
+            label="真实 Y", width=100, input_filter=ft.NumbersOnlyInputFilter(),
+            on_change=self._on_real_coord_change,
+        )
         
         self.map_dropdown = ft.Dropdown(
             label="地图",
@@ -1286,6 +1294,7 @@ class GhostHunterPage(ft.Column):
             icon=ft.Icons.PLAY_ARROW,
             color=ft.Colors.WHITE,
             bgcolor=ft.Colors.GREEN,
+            disabled=True,
             on_click=self._toggle_recognition
         )
 
@@ -1314,6 +1323,12 @@ class GhostHunterPage(ft.Column):
             size=13,
             color=ft.Colors.GREY,
         )
+        self.header_window_status_text = ft.Text(
+            "窗口未锁定", size=12, color=ft.Colors.ORANGE,
+        )
+        self.window_ready_text = ft.Text("1  锁定窗口", size=12)
+        self.map_region_ready_text = ft.Text("2  框选地图面板", size=12)
+        self.task_region_ready_text = ft.Text("3  框选抓鬼任务", size=12)
 
         self.unlock_btn = ft.IconButton(
             icon=ft.Icons.LOCK_OPEN,
@@ -1365,37 +1380,44 @@ class GhostHunterPage(ft.Column):
         self.map_section = ft.Card(
             content=ft.Container(
                 content=ft.Column([
-                    ft.Text("🗺️ 地图预测", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Row([ft.Icon(ft.Icons.MAP, color=ft.Colors.PRIMARY), ft.Column([ft.Text("预测地图", size=18, weight=ft.FontWeight.BOLD), ft.Text("红框为建议搜索范围", size=11, color=ft.Colors.ON_SURFACE_VARIANT)], spacing=1)]),
                     ft.Divider(),
                     ft.Row([self.map_stack], alignment=ft.MainAxisAlignment.CENTER),
+                    ft.Text("地图图片优先使用审核通过的采集资源，内置地图作为保底。", size=11, color=ft.Colors.OUTLINE),
+                ], spacing=10),
+                padding=18,
+            ),
+        )
+        self.map_management_section = ft.Card(
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text("地图资源", size=18, weight=ft.FontWeight.BOLD),
+                    ft.Text("采集、标定并审核小地图；日常识别无需在这里操作", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
+                    ft.Divider(),
                     ft.Row([
-                        ft.Button("选择地图图片", icon=ft.Icons.IMAGE, on_click=self._pick_map_image),
+                        ft.Button("导入地图图片", icon=ft.Icons.IMAGE, on_click=self._pick_map_image),
                         ft.Button("采集当前地图", icon=ft.Icons.SCREENSHOT_MONITOR, on_click=self._start_map_capture),
                         ft.Button("审核采集结果", icon=ft.Icons.FACT_CHECK, on_click=self._show_map_capture_review),
-                        ft.Text("绿框为预测范围", size=12, color=ft.Colors.GREY),
-                    ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
-                ], spacing=10),
-                padding=15,
+                    ], spacing=10, wrap=True),
+                    ft.Text("采集后至少使用 4 个分散点完成坐标标定，再通过审核启用。", size=11, color=ft.Colors.OUTLINE),
+                ], spacing=10), padding=18,
             ),
         )
         
         self.feedback_section = ft.Card(
             content=ft.Container(
                 content=ft.Column([
-                    ft.Text("🎯 反馈学习", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Row([ft.Icon(ft.Icons.NEAR_ME, color=ft.Colors.PRIMARY), ft.Column([ft.Text("真实坐标反馈", size=18, weight=ft.FontWeight.BOLD), ft.Text("找到目标后立即记录，不需要切换页面", size=11, color=ft.Colors.ON_SURFACE_VARIANT)], spacing=1)]),
                     ft.Divider(),
                     ft.Row([
-                        ft.Text("真实坐标:", size=14),
-                        ft.TextField(label="X", width=80, input_filter=ft.NumbersOnlyInputFilter(), 
-                                    on_change=self._on_real_coord_change),
-                        ft.TextField(label="Y", width=80, input_filter=ft.NumbersOnlyInputFilter(),
-                                    on_change=self._on_real_coord_change),
+                        self.real_x_field,
+                        self.real_y_field,
                     ], spacing=10),
                     ft.Row([
                         ft.Button("提交反馈", icon=ft.Icons.SEND, on_click=self._submit_feedback),
                         ft.Button("快捷记录", icon=ft.Icons.SPEED, on_click=self._quick_feedback),
                     ], spacing=10),
-                    ft.Text("反馈越多，预测越精准", size=12, color=ft.Colors.GREY),
+                    ft.Text("到达目标后填写真实坐标并提交；快捷记录会在未填写时使用任务坐标。", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
                 ], spacing=10),
                 padding=15,
             ),
@@ -1415,30 +1437,28 @@ class GhostHunterPage(ft.Column):
         self.coordinate_input_card = ft.Card(
             content=ft.Container(
                 content=ft.Column([
-                    ft.Text("1. 获取任务坐标", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Row([ft.Icon(ft.Icons.CENTER_FOCUS_STRONG, color=ft.Colors.PRIMARY), ft.Column([ft.Text("任务识别", size=18, weight=ft.FontWeight.BOLD), ft.Text("自动识别优先，也可直接修正地图和任务坐标", size=11, color=ft.Colors.ON_SURFACE_VARIANT)], spacing=1)]),
                     ft.Divider(),
                     ft.Row([
                         self.fake_x_field,
-                        ft.Text(",", size=24, weight=ft.FontWeight.BOLD),
                         self.fake_y_field,
                         self.map_dropdown,
                         self.recognize_btn,
-                        self.toggle_btn,
-                    ], spacing=10, alignment=ft.MainAxisAlignment.CENTER),
+                    ], spacing=10, wrap=True),
                 ], spacing=10),
-                padding=15,
+                padding=18,
             ),
         )
         self.recognition_view = ft.Column(
             [
-                self.coordinate_input_card,
-                self._build_window_lock_card(),
-                self.predict_result,
-                self.feedback_section,
+                ft.Row([
+                    ft.Column([self.coordinate_input_card, self.predict_result, self.feedback_section], spacing=12, expand=True),
+                    ft.Container(content=self.map_section, width=470),
+                ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
             ],
             spacing=12, expand=True, scroll=ft.ScrollMode.AUTO,
         )
-        self.map_view = ft.Column([self.map_section], expand=True, scroll=ft.ScrollMode.AUTO)
+        self.map_view = ft.Column([self._build_window_lock_card(), self.map_management_section], spacing=12, expand=True, scroll=ft.ScrollMode.AUTO)
         self.learning_view = ft.Column(
             [self.stats_section],
             spacing=12, expand=True, scroll=ft.ScrollMode.AUTO,
@@ -1451,11 +1471,15 @@ class GhostHunterPage(ft.Column):
         self._build_workspace_tabs()
 
         self.controls = [
-            ft.Column([
-                self.title_text,
-                ft.Text("识别任务坐标并预测真实范围；首次使用请先锁定游戏窗口。", color=ft.Colors.ON_SURFACE_VARIANT),
-            ], spacing=2),
-            self.workspace_tabs_row,
+            ft.Container(
+                content=ft.Row([
+                    ft.Column([self.title_text, ft.Text("实时识别任务坐标、显示搜索范围，并在同一页面完成真实坐标反馈", color=ft.Colors.ON_SURFACE_VARIANT)], spacing=2, expand=True),
+                    self.header_window_status_text,
+                    self.toggle_btn,
+                ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=16, bgcolor=ft.Colors.SURFACE_CONTAINER_LOW, border_radius=12,
+            ),
+            ft.Row([self.workspace_tabs_row, ft.Container(expand=True), ft.Text("建议先锁定游戏窗口和识别区域", size=12, color=ft.Colors.OUTLINE)], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             self.workspace,
         ]
         
@@ -1463,23 +1487,26 @@ class GhostHunterPage(ft.Column):
 
     def _build_workspace_tabs(self):
         tabs = [
-            ("识别与反馈", ft.Icons.CENTER_FOCUS_STRONG),
-            ("地图预测", ft.Icons.MAP),
-            ("学习统计", ft.Icons.INSIGHTS),
+            ("开始前设置", ft.Icons.TUNE),
+            ("实时辅助", ft.Icons.CENTER_FOCUS_STRONG),
+            ("学习数据", ft.Icons.INSIGHTS),
         ]
         self.workspace_tabs_row.controls = [
             ft.Button(label, icon=icon, on_click=lambda e, index=i: self._switch_workspace_tab(index),
                       bgcolor=ft.Colors.PRIMARY_CONTAINER if i == self.workspace_tab_index else None)
             for i, (label, icon) in enumerate(tabs)
         ]
-        views = [self.recognition_view, self.map_view, self.learning_view]
+        views = [self.map_view, self.recognition_view, self.learning_view]
         for index, view in enumerate(views):
             view.visible = index == self.workspace_tab_index
 
     def _switch_workspace_tab(self, index):
         self.workspace_tab_index = index
         self._build_workspace_tabs()
-        self.update()
+        try:
+            self.update()
+        except RuntimeError:
+            pass
 
     def _on_fake_coord_change(self, e):
         if self.current_type == "position":
@@ -1566,6 +1593,15 @@ class GhostHunterPage(ft.Column):
             self._page.show_dialog(ft.SnackBar(content=ft.Text(f"识别失败: {str(ex)}")))
 
     def _toggle_recognition(self, e):
+        if not self._is_setup_ready():
+            self.workspace_tab_index = 0
+            self._build_workspace_tabs()
+            try:
+                self.update()
+            except RuntimeError:
+                pass
+            self._page.show_dialog(ft.SnackBar(content=ft.Text("请先锁定游戏窗口并完成两个识别区域配置")))
+            return
         if self.is_running:
             self._stop_recognition()
         else:
@@ -2218,16 +2254,15 @@ class GhostHunterPage(ft.Column):
                 self._page.show_dialog(ft.SnackBar(content=ft.Text("请先输入或识别假坐标")))
                 return
             
-            real_fields = self.feedback_section.content.content.controls[2].controls
-            real_x = int(real_fields[1].value) if real_fields[1].value else fake_x
-            real_y = int(real_fields[2].value) if real_fields[2].value else fake_y
+            real_x = int(self.real_x_field.value) if self.real_x_field.value else fake_x
+            real_y = int(self.real_y_field.value) if self.real_y_field.value else fake_y
             
             stats = self.predictor.record_feedback(fake_x, fake_y, real_x, real_y, map_name)
             
-            real_fields[1].value = ""
-            real_fields[2].value = ""
-            real_fields[1].update()
-            real_fields[2].update()
+            self.real_x_field.value = ""
+            self.real_y_field.value = ""
+            self.real_x_field.update()
+            self.real_y_field.update()
             
             self._update_stats()
             self._calculate_prediction()
@@ -2243,9 +2278,8 @@ class GhostHunterPage(ft.Column):
             fake_y = int(self.fake_y_field.value) if self.fake_y_field.value else 0
             map_name = self.map_dropdown.value if self.map_dropdown.value != "未知" else ""
             
-            real_fields = self.feedback_section.content.content.controls[2].controls
-            real_x = int(real_fields[1].value) if real_fields[1].value else 0
-            real_y = int(real_fields[2].value) if real_fields[2].value else 0
+            real_x = int(self.real_x_field.value) if self.real_x_field.value else 0
+            real_y = int(self.real_y_field.value) if self.real_y_field.value else 0
             
             if fake_x == 0 or fake_y == 0:
                 self._page.show_dialog(ft.SnackBar(content=ft.Text("请先输入或识别假坐标")))
@@ -2257,10 +2291,10 @@ class GhostHunterPage(ft.Column):
             
             stats = self.predictor.record_feedback(fake_x, fake_y, real_x, real_y, map_name)
             
-            real_fields[1].value = ""
-            real_fields[2].value = ""
-            real_fields[1].update()
-            real_fields[2].update()
+            self.real_x_field.value = ""
+            self.real_y_field.value = ""
+            self.real_x_field.update()
+            self.real_y_field.update()
             
             self._update_stats()
             self._calculate_prediction()
@@ -2275,27 +2309,21 @@ class GhostHunterPage(ft.Column):
         
         if stats["total_samples"] == 0:
             self.stats_section.content.content = ft.Column([
-                ft.Text("📊 学习统计", size=16, weight=ft.FontWeight.BOLD),
+                ft.Row([ft.Icon(ft.Icons.INSIGHTS, color=ft.Colors.PRIMARY), ft.Column([ft.Text("学习数据", size=18, weight=ft.FontWeight.BOLD), ft.Text("真实坐标反馈会按地图积累为本地样本", size=12, color=ft.Colors.ON_SURFACE_VARIANT)], spacing=1)]),
                 ft.Divider(),
-                ft.Text("暂无学习数据", color=ft.Colors.GREY),
-                ft.Text("提交反馈后，算法将逐渐学习提高精度", size=12, color=ft.Colors.GREY),
+                ft.Container(content=ft.Column([ft.Icon(ft.Icons.DATASET_OUTLINED, size=48, color=ft.Colors.OUTLINE), ft.Text("暂无学习样本", weight=ft.FontWeight.BOLD), ft.Text("在“实时辅助”中提交一次真实坐标即可开始积累", size=12, color=ft.Colors.ON_SURFACE_VARIANT)], horizontal_alignment=ft.CrossAxisAlignment.CENTER), padding=32, alignment=ft.Alignment.CENTER),
             ], spacing=10)
         else:
-            maps_info = "\n".join([
-                f"  {map_name}: {data['count']} 次"
+            map_cards = [
+                ft.Container(content=ft.Row([ft.Icon(ft.Icons.MAP_OUTLINED, color=ft.Colors.PRIMARY), ft.Text(map_name, expand=True), ft.Text(f"{data['count']} 条", weight=ft.FontWeight.BOLD)]), padding=12, bgcolor=ft.Colors.SURFACE_CONTAINER_LOW, border_radius=10, width=260)
                 for map_name, data in self.predictor.learning_data.items()
-            ])
-            
+            ]
             self.stats_section.content.content = ft.Column([
-                ft.Text("📊 学习统计", size=16, weight=ft.FontWeight.BOLD),
+                ft.Row([ft.Icon(ft.Icons.INSIGHTS, color=ft.Colors.PRIMARY), ft.Column([ft.Text("学习数据", size=18, weight=ft.FontWeight.BOLD), ft.Text("样本仅保存在本机，用于修正各地图预测", size=12, color=ft.Colors.ON_SURFACE_VARIANT)], spacing=1)]),
                 ft.Divider(),
-                ft.Row([
-                    ft.Text("累计样本数:", size=14),
-                    ft.Text(f"{stats['total_samples']}", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.GREEN),
-                ], spacing=10),
-                ft.Text("各地图数据:", size=14),
-                ft.Text(maps_info, size=12),
-                ft.Text("每次反馈都会帮助算法优化预测模型", size=12, color=ft.Colors.GREY),
+                ft.Container(content=ft.Row([ft.Text("累计有效样本", expand=True), ft.Text(str(stats["total_samples"]), size=28, weight=ft.FontWeight.BOLD, color=ft.Colors.PRIMARY)]), padding=16, bgcolor=ft.Colors.PRIMARY_CONTAINER, border_radius=12),
+                ft.Text("地图样本分布", weight=ft.FontWeight.BOLD),
+                ft.Row(map_cards, spacing=10, wrap=True),
             ], spacing=10)
         
         try:
@@ -2308,8 +2336,13 @@ class GhostHunterPage(ft.Column):
         return ft.Card(
             content=ft.Container(
                 content=ft.Column([
-                    ft.Text("🎯 窗口锁定", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Row([ft.Icon(ft.Icons.WINDOW, color=ft.Colors.PRIMARY), ft.Column([ft.Text("游戏窗口与识别区域", size=18, weight=ft.FontWeight.BOLD), ft.Text("锁定后只截取游戏窗口；继续框选任务栏和地图面板可提高识别稳定性", size=12, color=ft.Colors.ON_SURFACE_VARIANT)], spacing=1)]),
                     ft.Divider(),
+                    ft.Row([
+                        self._setup_step_chip(self.window_ready_text),
+                        self._setup_step_chip(self.map_region_ready_text),
+                        self._setup_step_chip(self.task_region_ready_text),
+                    ], spacing=8),
                     ft.Row([
                         self.lock_window_btn,
                         self.window_status_text,
@@ -2318,11 +2351,40 @@ class GhostHunterPage(ft.Column):
                     ft.Row([
                         self.select_map_panel_btn,
                         self.select_ghost_task_btn,
-                    ], spacing=10, alignment=ft.MainAxisAlignment.CENTER),
+                    ], spacing=10),
+                    ft.Text("推荐顺序：锁定梦幻西游 → 框选地图面板 → 框选抓鬼任务。区域配置会自动保存。", size=11, color=ft.Colors.OUTLINE),
                 ], spacing=10),
-                padding=15,
+                padding=18,
             ),
         )
+
+    def _setup_step_chip(self, text_control):
+        return ft.Container(content=text_control, padding=10, bgcolor=ft.Colors.SURFACE_CONTAINER_LOW, border_radius=18)
+
+    def _is_setup_ready(self):
+        return bool(self.ocr.custom_region and self.ocr.map_panel_region and self.ocr.ghost_task_region)
+
+    def _refresh_setup_readiness(self):
+        states = (
+            (self.window_ready_text, bool(self.ocr.custom_region), "1  窗口已锁定", "1  锁定窗口"),
+            (self.map_region_ready_text, bool(self.ocr.map_panel_region), "2  地图面板已配置", "2  框选地图面板"),
+            (self.task_region_ready_text, bool(self.ocr.ghost_task_region), "3  抓鬼任务已配置", "3  框选抓鬼任务"),
+        )
+        for control, ready, ready_text, waiting_text in states:
+            control.value = ready_text if ready else waiting_text
+            control.color = ft.Colors.GREEN if ready else ft.Colors.ORANGE
+        ready = self._is_setup_ready()
+        self.toggle_btn.disabled = not ready
+        self.header_window_status_text.value = "识别配置已就绪" if ready else ("游戏窗口已锁定，区域待配置" if self.ocr.custom_region else "窗口未锁定")
+        self.header_window_status_text.color = ft.Colors.GREEN if ready else ft.Colors.ORANGE
+        for control in [* [item[0] for item in states], self.toggle_btn, self.header_window_status_text]:
+            try:
+                control.update()
+            except RuntimeError:
+                pass
+
+    async def _refresh_setup_readiness_async(self):
+        self._refresh_setup_readiness()
 
     def _lock_game_window(self, e):
         """锁定梦幻西游窗口并加载保存的区域配置"""
@@ -2333,6 +2395,8 @@ class GhostHunterPage(ft.Column):
                 self.ocr.set_window_region(region, title)
                 self.window_status_text.value = f"已锁定: {title}"
                 self.window_status_text.color = ft.Colors.GREEN
+                self.header_window_status_text.value = "游戏窗口已锁定"
+                self.header_window_status_text.color = ft.Colors.GREEN
                 self.lock_window_btn.visible = False
                 self.unlock_btn.visible = True
                 self.select_map_panel_btn.disabled = False
@@ -2341,6 +2405,7 @@ class GhostHunterPage(ft.Column):
                 logger.info(f"窗口锁定成功: {title}, 区域: {region}")
                 
                 self._load_region_config()
+                self._refresh_setup_readiness()
                 
             else:
                 self._page.show_dialog(ft.SnackBar(content=ft.Text("未找到梦幻西游窗口，请先启动游戏")))
@@ -2355,10 +2420,13 @@ class GhostHunterPage(ft.Column):
         self.ocr.clear_window_region()
         self.window_status_text.value = "未锁定 - 将截取全屏"
         self.window_status_text.color = ft.Colors.GREY
+        self.header_window_status_text.value = "窗口未锁定"
+        self.header_window_status_text.color = ft.Colors.ORANGE
         self.lock_window_btn.visible = True
         self.unlock_btn.visible = False
         self.select_map_panel_btn.disabled = True
         self.select_ghost_task_btn.disabled = True
+        self._refresh_setup_readiness()
         self._page.show_dialog(ft.SnackBar(content=ft.Text("OCR区域锁定已解除")))
         logger.info("窗口锁定已解除")
         self._page.update()
@@ -2510,6 +2578,10 @@ class GhostHunterPage(ft.Column):
         
         self.ocr.map_panel_region = region
         logger.info(f"地图面板区域已保存: {region}")
+        try:
+            self._page.run_task(self._refresh_setup_readiness_async)
+        except Exception:
+            pass
 
     def _save_ghost_task_region(self, region):
         """保存抓鬼任务区域配置（相对偏移量）"""
@@ -2546,6 +2618,10 @@ class GhostHunterPage(ft.Column):
         
         self.ocr.ghost_task_region = region
         logger.info(f"抓鬼任务区域已保存: {region}")
+        try:
+            self._page.run_task(self._refresh_setup_readiness_async)
+        except Exception:
+            pass
 
     def did_mount(self):
         """页面挂载后自动锁定梦幻西游窗口并加载保存的区域配置"""
@@ -2556,6 +2632,8 @@ class GhostHunterPage(ft.Column):
                 self.ocr.set_window_region(region, title)
                 self.window_status_text.value = f"已锁定: {title}"
                 self.window_status_text.color = ft.Colors.GREEN
+                self.header_window_status_text.value = "游戏窗口已锁定"
+                self.header_window_status_text.color = ft.Colors.GREEN
                 self.lock_window_btn.visible = False
                 self.unlock_btn.visible = True
                 self.select_map_panel_btn.disabled = False
@@ -2563,7 +2641,10 @@ class GhostHunterPage(ft.Column):
                 logger.info(f"自动锁定窗口成功: {title}, 区域: {region}")
                 
                 self._load_region_config()
-                
+                self._refresh_setup_readiness()
+                if self._is_setup_ready():
+                    self.workspace_tab_index = 1
+                    self._build_workspace_tabs()
                 self._page.update()
         except Exception:
             pass
@@ -2609,7 +2690,7 @@ class GhostHunterPage(ft.Column):
             elif "ghost_task_region" in config:
                 self.ocr.ghost_task_region = config["ghost_task_region"]
                 logger.info(f"抓鬼任务区域已从配置加载(绝对坐标): {self.ocr.ghost_task_region}")
-                
+            self._refresh_setup_readiness()
         except Exception as e:
             logger.error(f"加载区域配置失败: {e}")
 

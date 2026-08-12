@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import json
 from datetime import datetime
 from typing import Dict, Optional
 
@@ -48,6 +49,24 @@ class GrowthDB:
                 equip_belt TEXT,
                 equip_shoes TEXT,
                 equip_necklace TEXT,
+                update_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS role_equipment (
+                role_name TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                data_json TEXT NOT NULL DEFAULT '{}',
+                update_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (role_name, slot)
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS role_growth_system (
+                role_name TEXT PRIMARY KEY,
+                data_json TEXT NOT NULL DEFAULT '{}',
                 update_time DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -127,10 +146,88 @@ class GrowthDB:
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
         cursor.execute('DELETE FROM role_growth WHERE role_name = ?', (role_name,))
-        conn.commit()
         affected = cursor.rowcount
+        cursor.execute('DELETE FROM role_equipment WHERE role_name = ?', (role_name,))
+        cursor.execute('DELETE FROM role_growth_system WHERE role_name = ?', (role_name,))
+        conn.commit()
         conn.close()
         return affected > 0
+
+    def get_role_equipment(self, role_name: str) -> Dict:
+        """Return structured equipment keyed by slot; invalid rows are ignored."""
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT slot, data_json FROM role_equipment WHERE role_name = ?',
+            (role_name,),
+        )
+        result = {}
+        for slot, raw_data in cursor.fetchall():
+            try:
+                value = json.loads(raw_data)
+                if isinstance(value, dict):
+                    result[slot] = value
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        conn.close()
+        return result
+
+    def save_role_equipment(self, role_name: str, equipment: Dict) -> bool:
+        """Atomically replace all structured equipment for one role."""
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        try:
+            cursor.execute('DELETE FROM role_equipment WHERE role_name = ?', (role_name,))
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            rows = [
+                (role_name, slot, json.dumps(data, ensure_ascii=False), now)
+                for slot, data in equipment.items()
+                if isinstance(data, dict) and data
+            ]
+            if rows:
+                cursor.executemany('''
+                    INSERT INTO role_equipment (role_name, slot, data_json, update_time)
+                    VALUES (?, ?, ?, ?)
+                ''', rows)
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def get_role_growth_system(self, role_name: str) -> Dict:
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        cursor.execute('SELECT data_json FROM role_growth_system WHERE role_name = ?', (role_name,))
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return {}
+        try:
+            value = json.loads(row[0])
+            return value if isinstance(value, dict) else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+
+    def save_role_growth_system(self, role_name: str, data: Dict) -> bool:
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO role_growth_system (role_name, data_json, update_time)
+            VALUES (?, ?, ?)
+            ON CONFLICT(role_name) DO UPDATE SET
+                data_json = excluded.data_json,
+                update_time = excluded.update_time
+        ''', (
+            role_name,
+            json.dumps(data, ensure_ascii=False),
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        ))
+        conn.commit()
+        conn.close()
+        return True
 
     def _row_to_dict(self, row) -> Dict:
         columns = [

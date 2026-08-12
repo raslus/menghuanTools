@@ -19,10 +19,10 @@ def main(page: ft.Page):
     page.theme = ft.Theme(color_scheme_seed=ft.Colors.INDIGO, use_material3=True)
     page.bgcolor = ft.Colors.SURFACE
     page.padding = 0
-    page.window.width = 1200
-    page.window.height = 800
-    page.window.min_width = 1000
-    page.window.min_height = 700
+    page.window.width = 1440
+    page.window.height = 900
+    page.window.min_width = 1200
+    page.window.min_height = 760
 
     app_data_dir = get_app_data_dir()
     accounts_file = os.path.join(app_data_dir, "accounts.json")

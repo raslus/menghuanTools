@@ -6,8 +6,8 @@ app:
   
   # 桌面端配置
   desktop:
-    window_size: "1200x800"
-    min_window_size: "1000x700"
+    window_size: "1440x900"
+    min_window_size: "1200x760"
     resizable: true
   
   # 依赖配置
