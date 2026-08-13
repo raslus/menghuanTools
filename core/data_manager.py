@@ -97,6 +97,16 @@ class DataManager:
                     self.accounts = []
                     return
                 self.accounts = json.loads(json_str)
+                # 旧版本把 username 同时当作角色名；补齐 nickname 后继续兼容旧数据。
+                changed = False
+                for account in self.accounts:
+                    if "nickname" not in account:
+                        account["nickname"] = str(account.get("username", "")).strip()
+                        changed = True
+                    account.setdefault("username", "")
+                    account.setdefault("password", "")
+                if changed:
+                    self.save_data()
             except Exception as e:
                 print(f"加载数据失败: {e}")
                 self.accounts = []
@@ -129,11 +139,12 @@ class DataManager:
         """获取所有账号"""
         return self.accounts
 
-    def add_account(self, username, password="", remark=""):
+    def add_account(self, nickname, username="", password="", remark=""):
         """添加新账号"""
         account = {
             "id": self._generate_id(),
-            "username": username,
+            "nickname": nickname.strip(),
+            "username": (username or "").strip(),
             "password": password or "",
             "remark": remark,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -143,10 +154,12 @@ class DataManager:
         self.save_data()
         return account
 
-    def update_account(self, account_id, username=None, password=None, remark=None):
+    def update_account(self, account_id, nickname=None, username=None, password=None, remark=None):
         """更新账号信息"""
         for account in self.accounts:
             if account["id"] == account_id:
+                if nickname is not None:
+                    account["nickname"] = nickname.strip()
                 if username is not None:
                     account["username"] = username
                 if password is not None:
@@ -173,6 +186,20 @@ class DataManager:
             if account["id"] == account_id:
                 return account
         return None
+
+    def nickname_exists(self, nickname: str, exclude_id=None) -> bool:
+        """角色昵称用于跨模块关联，因此同一资料库内必须唯一。"""
+        normalized = (nickname or "").strip().casefold()
+        return any(
+            account.get("id") != exclude_id
+            and self.get_role_name(account).casefold() == normalized
+            for account in self.accounts
+        )
+
+    @staticmethod
+    def get_role_name(account) -> str:
+        """获取角色显示名，并兼容尚未迁移的旧账号数据。"""
+        return str(account.get("nickname") or account.get("username") or "").strip()
 
     def _generate_id(self):
         """生成唯一ID"""
@@ -272,16 +299,26 @@ class DataManager:
                 return False, 0
 
             normalized_accounts = []
+            seen_nicknames = {
+                self.get_role_name(account).casefold()
+                for account in self.accounts
+            } if merge else set()
             for account in imported_accounts:
                 if not isinstance(account, dict):
                     continue
                 username = str(account.get("username", "")).strip()
+                nickname = str(account.get("nickname") or username).strip()
                 raw_password = account.get("password", "")
                 password = "" if raw_password is None else str(raw_password)
-                if not username:
+                if not nickname:
                     continue
+                nickname_key = nickname.casefold()
+                if nickname_key in seen_nicknames:
+                    continue
+                seen_nicknames.add(nickname_key)
                 normalized_accounts.append({
                     "id": account.get("id"),
+                    "nickname": nickname,
                     "username": username,
                     "password": password,
                     "remark": str(account.get("remark", "")),

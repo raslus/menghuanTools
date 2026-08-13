@@ -2,6 +2,7 @@ import asyncio
 import flet as ft
 import os
 from core.growth_db import GrowthDB
+from core.accounting_db import AccountingDB
 from utils.platform_utils import get_app_data_dir
 
 
@@ -18,21 +19,22 @@ class AccountPage(ft.Column):
         app_data_dir = get_app_data_dir()
         db_path = os.path.join(app_data_dir, "growth.db")
         self.growth_db = GrowthDB(db_path)
+        self.accounting_db = AccountingDB(os.path.join(app_data_dir, "accounting.db"))
 
         self.expand = True
         self.spacing = 16
 
-        self.account_count_text = ft.Text("0 个账号", color=ft.Colors.ON_SURFACE_VARIANT)
+        self.account_count_text = ft.Text("0 个角色", color=ft.Colors.ON_SURFACE_VARIANT)
 
         self.search_field = ft.TextField(
-            hint_text="按用户名搜索账号",
+            hint_text="按角色昵称或用户名搜索",
             prefix_icon=ft.Icons.SEARCH,
             on_change=self.on_search_change,
             expand=True,
         )
 
         self.add_button = ft.Button(
-            "添加账号",
+            "添加角色",
             icon=ft.Icons.ADD,
             on_click=self.show_add_dialog,
         )
@@ -127,7 +129,7 @@ class AccountPage(ft.Column):
     def _load_accounts(self):
         self.accounts_list.controls.clear()
         accounts = self.data_manager.get_all_accounts()
-        self.account_count_text.value = f"{len(accounts)} 个账号"
+        self.account_count_text.value = f"{len(accounts)} 个角色"
         if not accounts:
             self.empty_state.visible = True
             self.accounts_list.visible = False
@@ -141,8 +143,10 @@ class AccountPage(ft.Column):
         self.accounts_list.controls.clear()
         accounts = self.data_manager.get_all_accounts()
         if search_text:
-            accounts = [a for a in accounts if search_text.lower() in a.get("username", "").lower()]
-        self.account_count_text.value = f"找到 {len(accounts)} 个账号" if search_text else f"{len(accounts)} 个账号"
+            query = search_text.casefold()
+            accounts = [a for a in accounts if query in self.data_manager.get_role_name(a).casefold()
+                        or query in a.get("username", "").casefold()]
+        self.account_count_text.value = f"找到 {len(accounts)} 个角色" if search_text else f"{len(accounts)} 个角色"
         if not accounts:
             empty_title = "没有匹配的账号" if search_text else "还没有保存账号"
             empty_hint = "换个关键词试试" if search_text else "添加第一个账号，之后可以快速复制登录信息"
@@ -187,12 +191,17 @@ class AccountPage(ft.Column):
                     [
                         ft.ListTile(
                             leading=ft.Icon(ft.Icons.ACCOUNT_CIRCLE, size=40),
-                            title=ft.Text(account.get("username", "")),
-                            subtitle=ft.Text(account.get("remark", "") or "无备注"),
+                            title=ft.Text(self.data_manager.get_role_name(account)),
+                            subtitle=ft.Text(" · ".join(filter(None, [
+                                f"账号：{account.get('username')}" if account.get("username") else "未填写登录账号",
+                                account.get("remark", ""),
+                            ]))),
                         ),
                         ft.Row(
                             [
-                                ft.TextButton("复制用户名", icon=ft.Icons.COPY, on_click=copy_username),
+                                ft.TextButton("复制账号" if account.get("username") else "未设置账号",
+                                              icon=ft.Icons.COPY, on_click=copy_username if account.get("username") else None,
+                                              disabled=not bool(account.get("username"))),
                                 ft.TextButton(
                                     "复制密码" if has_password else "未设置密码",
                                     icon=ft.Icons.COPY if has_password else ft.Icons.LOCK_OPEN,
@@ -223,7 +232,8 @@ class AccountPage(ft.Column):
         )
 
     def show_add_dialog(self, e):
-        username_field = ft.TextField(label="用户名", autofocus=True)
+        nickname_field = ft.TextField(label="角色昵称", autofocus=True)
+        username_field = ft.TextField(label="登录账号（可选）", hint_text="可稍后补充")
         password_field = ft.TextField(
             label="密码（可选）",
             hint_text="可稍后在编辑账号时补充",
@@ -233,20 +243,25 @@ class AccountPage(ft.Column):
         remark_field = ft.TextField(label="备注", multiline=True, min_lines=2, max_lines=4)
 
         def save_click(e):
-            if not username_field.value:
-                username_field.error_text = "请输入用户名"
-                username_field.update()
+            nickname = (nickname_field.value or "").strip()
+            if not nickname:
+                nickname_field.error_text = "请输入角色昵称"
+                nickname_field.update()
+                return
+            if self.data_manager.nickname_exists(nickname):
+                nickname_field.error_text = "该角色昵称已存在"
+                nickname_field.update()
                 return
             self.data_manager.add_account(
-                username_field.value, password_field.value or "", remark_field.value or "",
+                nickname, username_field.value or "", password_field.value or "", remark_field.value or "",
             )
             self._page.pop_dialog()
             self.refresh_accounts()
-            self.show_snackbar("账号添加成功")
+            self.show_snackbar("角色添加成功")
 
         dialog = ft.AlertDialog(
-            title=ft.Text("添加账号"),
-            content=ft.Column([username_field, password_field, remark_field], tight=True),
+            title=ft.Text("添加角色"),
+            content=ft.Column([nickname_field, username_field, password_field, remark_field], tight=True),
             actions=[
                 ft.TextButton("取消", on_click=lambda e: self._page.pop_dialog()),
                 ft.Button("保存", on_click=save_click),
@@ -255,7 +270,8 @@ class AccountPage(ft.Column):
         self._page.show_dialog(dialog)
 
     def show_edit_dialog(self, account):
-        username_field = ft.TextField(label="用户名", value=account.get("username", ""))
+        nickname_field = ft.TextField(label="角色昵称", value=self.data_manager.get_role_name(account))
+        username_field = ft.TextField(label="登录账号（可选）", value=account.get("username", ""))
         password_field = ft.TextField(
             label="密码（可选）", value=account.get("password", ""),
             hint_text="留空表示暂不设置密码",
@@ -265,20 +281,29 @@ class AccountPage(ft.Column):
                                      multiline=True, min_lines=2, max_lines=4)
 
         def save_click(e):
-            if not username_field.value:
-                username_field.error_text = "请输入用户名"
-                username_field.update()
+            nickname = (nickname_field.value or "").strip()
+            if not nickname:
+                nickname_field.error_text = "请输入角色昵称"
+                nickname_field.update()
                 return
+            if self.data_manager.nickname_exists(nickname, account["id"]):
+                nickname_field.error_text = "该角色昵称已存在"
+                nickname_field.update()
+                return
+            old_name = self.data_manager.get_role_name(account)
             self.data_manager.update_account(
-                account["id"], username_field.value, password_field.value, remark_field.value,
+                account["id"], nickname, username_field.value or "", password_field.value or "", remark_field.value,
             )
+            if old_name != nickname:
+                self.accounting_db.rename_role(old_name, nickname)
+                self.growth_db.rename_role(old_name, nickname)
             self._page.pop_dialog()
             self.refresh_accounts()
-            self.show_snackbar("账号更新成功")
+            self.show_snackbar("角色信息更新成功")
 
         dialog = ft.AlertDialog(
-            title=ft.Text("编辑账号"),
-            content=ft.Column([username_field, password_field, remark_field], tight=True),
+            title=ft.Text("编辑角色与账号"),
+            content=ft.Column([nickname_field, username_field, password_field, remark_field], tight=True),
             actions=[
                 ft.TextButton("取消", on_click=lambda e: self._page.pop_dialog()),
                 ft.Button("保存", on_click=save_click),
@@ -288,16 +313,20 @@ class AccountPage(ft.Column):
 
     def show_delete_dialog(self, account):
         def confirm_delete(e):
-            role_name = account.get("username", "")
+            role_name = self.data_manager.get_role_name(account)
             self.data_manager.delete_account(account["id"])
             self.growth_db.delete_role_growth(role_name)
+            deleted_income_count = self.accounting_db.delete_role_records(role_name)
             self._page.pop_dialog()
             self.refresh_accounts()
-            self.show_snackbar("账号删除成功")
+            self.show_snackbar(f"角色已删除，同时清除 {deleted_income_count} 条历史收益")
 
         dialog = ft.AlertDialog(
             title=ft.Text("确认删除"),
-            content=ft.Text(f"确定要删除账号 \"{account.get('username', '')}\" 吗？此操作不可恢复。"),
+            content=ft.Text(
+                f"确定要删除角色 \"{self.data_manager.get_role_name(account)}\" 吗？"
+                "该角色的全部历史收益和养成数据也会被永久清除，此操作不可恢复。"
+            ),
             actions=[
                 ft.TextButton("取消", on_click=lambda e: self._page.pop_dialog()),
                 ft.Button("删除", bgcolor=ft.Colors.ERROR, color=ft.Colors.ON_ERROR, on_click=confirm_delete),

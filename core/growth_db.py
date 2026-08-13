@@ -229,6 +229,26 @@ class GrowthDB:
         conn.close()
         return True
 
+    def rename_role(self, old_name: str, new_name: str) -> bool:
+        """同步角色在养成相关表中的名称。"""
+        if not old_name or old_name == new_name:
+            return True
+        conn = sqlite3.connect(self.db_file)
+        try:
+            cursor = conn.cursor()
+            for table in ("role_growth", "role_equipment", "role_growth_system"):
+                cursor.execute(
+                    f"UPDATE {table} SET role_name=? WHERE role_name=?",
+                    (new_name, old_name),
+                )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
     def _row_to_dict(self, row) -> Dict:
         columns = [
             'role_name', 'cur_level', 'cur_hp', 'cur_mp', 'cur_damage', 'cur_magic_damage',

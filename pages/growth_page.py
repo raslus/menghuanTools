@@ -107,7 +107,7 @@ class GrowthPage(ft.Column):
 
     def _load_role_options(self):
         accounts = self.data_manager.get_all_accounts()
-        role_names = [acc['username'] for acc in accounts]
+        role_names = [self.data_manager.get_role_name(acc) for acc in accounts]
         
         self.role_dropdown.options = [ft.DropdownOption(name) for name in role_names]
         

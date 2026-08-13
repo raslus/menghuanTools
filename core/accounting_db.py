@@ -126,6 +126,33 @@ class AccountingDB:
         conn.close()
         return affected > 0
 
+    def rename_role(self, old_name: str, new_name: str) -> int:
+        """角色改名时同步历史收益，避免统计被拆分。"""
+        if not old_name or old_name == new_name:
+            return 0
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE income_records SET role_name=? WHERE role_name=?',
+            (new_name, old_name),
+        )
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected
+
+    def delete_role_records(self, role_name: str) -> int:
+        """删除指定角色的全部历史收益记录。"""
+        if not role_name:
+            return 0
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM income_records WHERE role_name=?', (role_name,))
+        conn.commit()
+        affected = cursor.rowcount
+        conn.close()
+        return affected
+
     def get_daily_summary(self, records: List[Dict]) -> List[Dict]:
         """按日期汇总"""
         daily = {}

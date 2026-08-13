@@ -615,7 +615,7 @@ class AccountingPage(ft.Column):
             self._page.show_dialog(ft.SnackBar(content=ft.Text("请先在【账号管理】中添加角色")))
             return
 
-        role_options = [ft.DropdownOption(a['username']) for a in accounts]
+        role_options = [ft.DropdownOption(self.data_manager.get_role_name(a)) for a in accounts]
         
         role_dropdown = ft.Dropdown(label="角色", options=role_options, width=200)
         date_field = ft.TextField(label="日期", value=datetime.now().strftime('%Y-%m-%d'), width=200)
@@ -708,7 +708,10 @@ class AccountingPage(ft.Column):
 
     def show_edit_dialog(self, record):
         accounts = self.data_manager.get_all_accounts()
-        role_options = [ft.DropdownOption(a['username']) for a in accounts]
+        role_names = [self.data_manager.get_role_name(a) for a in accounts]
+        if record['role_name'] not in role_names:
+            role_names.append(record['role_name'])
+        role_options = [ft.DropdownOption(name) for name in role_names]
         
         role_dropdown = ft.Dropdown(label="角色", options=role_options, value=record['role_name'], width=200)
         date_field = ft.TextField(label="日期", value=record['record_date'], width=200)
