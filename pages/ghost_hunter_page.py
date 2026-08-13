@@ -780,7 +780,6 @@ class PredictionOverlay:
         self.thread = None
         self.update_event = threading.Event()
         self.map_image = None
-        self.map_photo = None
         self.force_refresh = False
         self._generation = 0
         self._lock = threading.RLock()
@@ -849,11 +848,16 @@ class PredictionOverlay:
             )
             self.thread.start()
 
-    def stop(self):
+    def stop(self, timeout=3.0):
         with self._lock:
             self.running = False
             self._generation += 1
+            thread = self.thread
         self.update_event.set()
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                logger.warning("悬浮窗线程未在 %.1f 秒内结束", timeout)
 
     def _run_loop(self, generation):
         while self.running and generation == self._generation:
@@ -888,16 +892,20 @@ class PredictionOverlay:
         with self._lock:
             self.root, self.canvas = root, canvas
 
+        map_photo = None
         try:
             while self.running and generation == self._generation:
                 if self.force_refresh:
-                    self._render(canvas, root, tk, Image, ImageTk)
+                    map_photo = self._render(canvas, root, tk, Image, ImageTk)
                 root.update_idletasks()
                 root.update()
                 self.update_event.wait(0.25)
                 self.update_event.clear()
         finally:
             try:
+                canvas.delete("all")
+                map_photo = None
+                root.update_idletasks()
                 root.destroy()
             except Exception:
                 pass
@@ -909,7 +917,7 @@ class PredictionOverlay:
             self.force_refresh = False
         canvas.delete("all")
         if not map_image or not os.path.exists(map_image):
-            return
+            return None
 
         with Image.open(map_image) as source:
             original_width, original_height = source.size
@@ -917,16 +925,16 @@ class PredictionOverlay:
             draw_width = max(1, int(original_width * scale))
             draw_height = max(1, int(original_height * scale))
             resized = source.convert("RGB").resize((draw_width, draw_height), Image.LANCZOS)
-        self.map_photo = ImageTk.PhotoImage(resized)
+        map_photo = ImageTk.PhotoImage(resized)
         total_height = self.HEADER_HEIGHT + draw_height
         canvas.config(width=draw_width, height=total_height)
         root.geometry(f"{draw_width}x{total_height}+20+80")
         canvas.create_rectangle(0, 0, draw_width, self.HEADER_HEIGHT, fill="#172033", outline="")
-        canvas.create_image(0, self.HEADER_HEIGHT, anchor=tk.NW, image=self.map_photo)
+        canvas.create_image(0, self.HEADER_HEIGHT, anchor=tk.NW, image=map_photo)
 
         if not prediction:
             canvas.create_text(12, 22, text="等待坐标识别…", fill="white", anchor=tk.W, font=("Microsoft YaHei", 11, "bold"))
-            return
+            return map_photo
 
         map_name = prediction.get("map_name") or "未知地图"
         ghost_label = {"big": "大鬼", "small": "小鬼", "unknown": "抓鬼"}.get(prediction.get("ghost_size"), "定位")
@@ -959,6 +967,8 @@ class PredictionOverlay:
             canvas.create_oval(dot_x - 6, dot_y - 6, dot_x + 6, dot_y + 6, fill="#2196f3", outline="white", width=2)
         else:
             canvas.create_oval(dot_x - 7, dot_y - 7, dot_x + 7, dot_y + 7, fill="#00d26a", outline="white", width=3)
+
+        return map_photo
 
 
 MAP_IMAGE_URLS = {
@@ -2589,13 +2599,19 @@ class GhostHunterPage(ft.Column):
         """清理页面资源：停止识别线程、关闭悬浮窗、释放截图资源"""
         if self.is_running:
             self.is_running = False
+            self._recognition_generation += 1
             if self.toggle_btn:
                 self.toggle_btn.text = "▶ 开启识别"
                 self.toggle_btn.icon = ft.Icons.PLAY_ARROW
                 self.toggle_btn.bgcolor = ft.Colors.GREEN
         self.overlay.stop()
+        recognition_thread = self.recognize_thread
+        if recognition_thread and recognition_thread is not threading.current_thread():
+            recognition_thread.join(timeout=3.0)
+            if recognition_thread.is_alive():
+                logger.warning("后台识别线程未在 3.0 秒内结束")
         try:
             self.ocr.screen_capture.close()
-        except:
-            pass
+        except Exception as exc:
+            logger.debug(f"关闭截图资源失败: {exc}")
         logger.debug("GhostHunterPage资源已清理")
