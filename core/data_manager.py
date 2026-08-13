@@ -129,12 +129,12 @@ class DataManager:
         """获取所有账号"""
         return self.accounts
 
-    def add_account(self, username, password, remark=""):
+    def add_account(self, username, password="", remark=""):
         """添加新账号"""
         account = {
             "id": self._generate_id(),
             "username": username,
-            "password": password,
+            "password": password or "",
             "remark": remark,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -276,8 +276,9 @@ class DataManager:
                 if not isinstance(account, dict):
                     continue
                 username = str(account.get("username", "")).strip()
-                password = str(account.get("password", ""))
-                if not username or not password:
+                raw_password = account.get("password", "")
+                password = "" if raw_password is None else str(raw_password)
+                if not username:
                     continue
                 normalized_accounts.append({
                     "id": account.get("id"),

@@ -162,6 +162,8 @@ class AccountPage(ft.Column):
             pass
 
     def create_account_card(self, account):
+        has_password = bool(account.get("password"))
+
         async def do_copy(text: str, message: str):
             await ft.Clipboard().set(text)
             self.show_snackbar(message)
@@ -191,7 +193,12 @@ class AccountPage(ft.Column):
                         ft.Row(
                             [
                                 ft.TextButton("复制用户名", icon=ft.Icons.COPY, on_click=copy_username),
-                                ft.TextButton("复制密码", icon=ft.Icons.COPY, on_click=copy_password),
+                                ft.TextButton(
+                                    "复制密码" if has_password else "未设置密码",
+                                    icon=ft.Icons.COPY if has_password else ft.Icons.LOCK_OPEN,
+                                    on_click=copy_password if has_password else None,
+                                    disabled=not has_password,
+                                ),
                                 ft.Row(
                                     [
                                         ft.IconButton(
@@ -217,7 +224,12 @@ class AccountPage(ft.Column):
 
     def show_add_dialog(self, e):
         username_field = ft.TextField(label="用户名", autofocus=True)
-        password_field = ft.TextField(label="密码", password=True, can_reveal_password=True)
+        password_field = ft.TextField(
+            label="密码（可选）",
+            hint_text="可稍后在编辑账号时补充",
+            password=True,
+            can_reveal_password=True,
+        )
         remark_field = ft.TextField(label="备注", multiline=True, min_lines=2, max_lines=4)
 
         def save_click(e):
@@ -225,12 +237,8 @@ class AccountPage(ft.Column):
                 username_field.error_text = "请输入用户名"
                 username_field.update()
                 return
-            if not password_field.value:
-                password_field.error_text = "请输入密码"
-                password_field.update()
-                return
             self.data_manager.add_account(
-                username_field.value, password_field.value, remark_field.value or "",
+                username_field.value, password_field.value or "", remark_field.value or "",
             )
             self._page.pop_dialog()
             self.refresh_accounts()
@@ -249,7 +257,8 @@ class AccountPage(ft.Column):
     def show_edit_dialog(self, account):
         username_field = ft.TextField(label="用户名", value=account.get("username", ""))
         password_field = ft.TextField(
-            label="密码", value=account.get("password", ""),
+            label="密码（可选）", value=account.get("password", ""),
+            hint_text="留空表示暂不设置密码",
             password=True, can_reveal_password=True,
         )
         remark_field = ft.TextField(label="备注", value=account.get("remark", ""),
